@@ -1,3 +1,5 @@
+// src/App.tsx
+
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as Tone from "tone";
 
@@ -8,19 +10,23 @@ interface Touch {
   startX: number;
   startY: number;
   isDragging: boolean;
-  synth?: Tone.Synth;
   startTime: number;
 }
 
 interface VisualEffect {
-  id: string; // Changed to string for unique identification
-  touchId: number; // Keep track of associated touch for updates
+  id: string;
+  touchId: number;
   x: number;
   y: number;
   type: "tap" | "drag";
   color: string;
   timestamp: number;
   trail?: Array<{ x: number; y: number; timestamp: number }>;
+}
+
+interface SynthWithFilter {
+  synth: Tone.Synth;
+  filter: Tone.Filter;
 }
 
 const BRIGHT_COLORS = [
@@ -59,7 +65,7 @@ export default function App() {
   const [isMouseDown, setIsMouseDown] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const drumsRef = useRef<any[]>([]);
-  const synthsRef = useRef<Map<number, Tone.Synth>>(new Map());
+  const synthsRef = useRef<Map<number, SynthWithFilter>>(new Map());
   const audioInitialized = useRef(false);
   const mouseId = useRef(999999); // Fixed ID for mouse events
   const effectIdCounter = useRef(0); // Counter for unique effect IDs
@@ -103,7 +109,7 @@ export default function App() {
       harmonicity: 12,
       modulationIndex: 100,
       resonance: 4000,
-      octaves: 1.5
+      octaves: 1.5,
     }).toDestination();
     cymbal.frequency.value = 250; // Set frequency after construction
 
@@ -183,23 +189,29 @@ export default function App() {
     const note = getNote(x, containerWidth);
     const filterFreq = 200 + (1 - y / containerHeight) * 2000; // Y controls filter cutoff
 
-    let synth = synthsRef.current.get(touch.id);
-    if (!synth) {
-      synth = new Tone.Synth({
+    let entry = synthsRef.current.get(touch.id);
+    if (!entry) {
+      // Create filter and synth, connect synth to filter
+      const filter = new Tone.Filter({
+        type: "lowpass",
+        frequency: filterFreq,
+        Q: 1,
+      }).toDestination();
+
+      const synth = new Tone.Synth({
         oscillator: { type: "triangle" },
         envelope: { attack: 0.1, decay: 0.3, sustain: 0.3, release: 1 },
-        filter: { type: "lowpass", frequency: filterFreq, Q: 1 },
-      }).toDestination();
-      synthsRef.current.set(touch.id, synth);
+      }).connect(filter);
+
+      entry = { synth, filter };
+      synthsRef.current.set(touch.id, entry);
     } else {
       // Update filter frequency for existing synth
-      if (synth.filter) {
-        synth.filter.frequency.value = filterFreq;
-      }
+      entry.filter.frequency.value = filterFreq;
     }
 
     try {
-      synth.triggerAttackRelease(note, "4n");
+      entry.synth.triggerAttackRelease(note, "4n");
     } catch (error) {
       console.error("Synth play error:", error);
     }
@@ -444,13 +456,15 @@ export default function App() {
             playDrum(existingTouch.y, rect.height);
           } else {
             // Release synth for drag
-            const synth = synthsRef.current.get(touchId);
-            if (synth) {
+            const entry = synthsRef.current.get(touchId);
+            if (entry) {
               try {
-                synth.triggerRelease();
+                entry.synth.triggerRelease();
               } catch (error) {
                 console.error("Synth release error:", error);
               }
+              entry.synth.dispose();
+              entry.filter.dispose();
               synthsRef.current.delete(touchId);
             }
           }
@@ -483,13 +497,15 @@ export default function App() {
           playDrum(existingTouch.y, rect.height);
         } else {
           // Release synth for drag
-          const synth = synthsRef.current.get(touchId);
-          if (synth) {
+          const entry = synthsRef.current.get(touchId);
+          if (entry) {
             try {
-              synth.triggerRelease();
+              entry.synth.triggerRelease();
             } catch (error) {
               console.error("Synth release error:", error);
             }
+            entry.synth.dispose();
+            entry.filter.dispose();
             synthsRef.current.delete(touchId);
           }
         }
@@ -514,9 +530,10 @@ export default function App() {
   // Cleanup audio on unmount
   useEffect(() => {
     return () => {
-      synthsRef.current.forEach((synth) => {
+      synthsRef.current.forEach((entry) => {
         try {
-          synth.dispose();
+          entry.synth.dispose();
+          entry.filter.dispose();
         } catch (error) {
           console.error("Cleanup error:", error);
         }
