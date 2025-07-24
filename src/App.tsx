@@ -99,13 +99,13 @@ export default function App() {
 
     // Cymbal - metallic sound with longer sustain
     const cymbal = new Tone.MetalSynth({
-      frequency: 250,
       envelope: { attack: 0.001, decay: 0.4, sustain: 0.1, release: 1.2 },
       harmonicity: 12,
       modulationIndex: 100,
       resonance: 4000,
-      octaves: 1.5,
+      octaves: 1.5
     }).toDestination();
+    cymbal.frequency.value = 250; // Set frequency after construction
 
     return [kick, snare, hihat, cymbal];
   };
