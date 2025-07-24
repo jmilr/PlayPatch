@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/PlayPatch/static/css/main.38bf393a.css",
+    "main.js": "/PlayPatch/static/js/main.d99c4641.js",
+    "index.html": "/PlayPatch/index.html",
+    "main.38bf393a.css.map": "/PlayPatch/static/css/main.38bf393a.css.map",
+    "main.d99c4641.js.map": "/PlayPatch/static/js/main.d99c4641.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.38bf393a.css",
+    "static/js/main.d99c4641.js"
+  ]
+}
