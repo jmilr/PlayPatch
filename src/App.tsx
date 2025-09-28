@@ -56,6 +56,94 @@ const PENTATONIC_NOTES = [
   "A5",
 ];
 
+/**
+ * Unlocks the Web Audio hardware by playing a very short, silent buffer.
+ * Safari on iOS in particular requires this nudge even after calling Tone.start().
+ */
+const unlockAudioHardware = (context: AudioContext) => {
+  try {
+    const buffer = context.createBuffer(1, 1, context.sampleRate);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+
+    const now = context.currentTime;
+    source.start(now);
+    source.stop(now + 0.01);
+    source.onended = () => {
+      try {
+        source.disconnect();
+      } catch (disconnectError) {
+        console.warn("Audio unlock disconnect failed", disconnectError);
+      }
+    };
+  } catch (error) {
+    console.warn("Audio unlock failed", error);
+  }
+};
+
+interface EnsureContextOptions {
+  timeoutMs?: number;
+}
+
+/**
+ * Ensures that the provided audio context reaches the "running" state.
+ * Retries resume attempts and waits for the state change event with a timeout.
+ */
+const ensureAudioContextRunning = async (
+  context: AudioContext,
+  options: EnsureContextOptions = {}
+) => {
+  const { timeoutMs = 4000 } = options;
+
+  const attemptResume = async () => {
+    try {
+      await context.resume();
+    } catch (error) {
+      console.warn("Audio context resume failed", error);
+    }
+  };
+
+  if (context.state !== "running") {
+    await attemptResume();
+  }
+
+  if (context.state === "running") {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      settled = true;
+      context.removeEventListener("statechange", handleStateChange);
+      window.clearTimeout(timerId);
+    };
+
+    const handleStateChange = () => {
+      if (context.state === "running" && !settled) {
+        cleanup();
+        resolve();
+      }
+    };
+
+    const timerId = window.setTimeout(() => {
+      if (!settled) {
+        cleanup();
+        reject(
+          new Error("Audio context did not enter running state within timeout")
+        );
+      }
+    }, timeoutMs);
+
+    context.addEventListener("statechange", handleStateChange);
+
+    unlockAudioHardware(context);
+    void attemptResume();
+  });
+};
+
 export default function App() {
   const [touches, setTouches] = useState<Map<number, Touch>>(new Map());
   const [visualEffects, setVisualEffects] = useState<VisualEffect[]>([]);
@@ -74,6 +162,7 @@ export default function App() {
   const synthsRef = useRef<Map<number, SynthWithFilter>>(new Map());
   const audioInitialized = useRef(false);
   const audioInitPromise = useRef<Promise<void> | null>(null);
+  const audioContextCleanup = useRef<(() => void) | null>(null);
   const mouseId = useRef(999999); // Fixed ID for mouse events
   const effectIdCounter = useRef(0); // Counter for unique effect IDs
 
@@ -84,7 +173,7 @@ export default function App() {
   };
 
   // Create synthesized drum sounds
-  const createDrumSounds = () => {
+  const createDrumSounds = useCallback(() => {
     // Kick drum - low frequency with quick attack
     const kick = new Tone.MembraneSynth({
       pitchDecay: 0.05,
@@ -121,22 +210,61 @@ export default function App() {
     cymbal.frequency.value = 250; // Set frequency after construction
 
     return [kick, snare, hihat, cymbal];
-  };
+  }, []);
 
   // Initialize audio context and instruments
   const initializeAudio = useCallback((): Promise<void> => {
+    const existingContext = Tone.getContext()
+      .rawContext as AudioContext | undefined;
+
     if (audioInitialized.current) {
+      if (existingContext && existingContext.state !== "running") {
+        return ensureAudioContextRunning(existingContext).catch((error) => {
+          console.error("Audio resume failed:", error);
+          setAudioStatus({
+            message: "Tap to resume audio",
+            progress: null,
+          });
+          throw error;
+        });
+      }
       return Promise.resolve();
     }
 
     if (!audioInitPromise.current) {
       audioInitPromise.current = (async () => {
+        const preStartContext = existingContext ?? null;
+
         try {
+          if (preStartContext) {
+            setAudioStatus({
+              message: "Preparing audio hardware...",
+              progress: 0.1,
+            });
+            await ensureAudioContextRunning(preStartContext).catch((error) => {
+              console.warn("Pre-start audio resume failed", error);
+            });
+          }
+
           setAudioStatus({
             message: "Starting audio context...",
             progress: 0.25,
           });
           await Tone.start();
+
+          const runningContext =
+            (Tone.getContext().rawContext as AudioContext | undefined) ??
+            preStartContext;
+
+          if (runningContext) {
+            setAudioStatus({
+              message: "Stabilizing audio engine...",
+              progress: 0.45,
+            });
+            await ensureAudioContextRunning(runningContext, {
+              timeoutMs: 6000,
+            });
+          }
 
           setAudioStatus({
             message: "Creating drum sounds...",
@@ -145,30 +273,80 @@ export default function App() {
           drumsRef.current = createDrumSounds();
 
           audioInitialized.current = true;
+
           setAudioStatus({
             message: "Audio ready!",
             progress: 1,
           });
 
-          // Hide status after 2 seconds
           setTimeout(
             () => setAudioStatus({ message: "", progress: null }),
             2000
           );
+
+          if (runningContext) {
+            if (audioContextCleanup.current) {
+              audioContextCleanup.current();
+            }
+
+            const handleStateChange = () => {
+              if (runningContext.state === "suspended") {
+                runningContext.resume().catch((error) => {
+                  console.warn(
+                    "Audio context resume after suspension failed",
+                    error
+                  );
+                  setAudioStatus({
+                    message: "Tap to resume audio",
+                    progress: null,
+                  });
+                });
+              }
+            };
+
+            const handleVisibilityChange = () => {
+              if (document.visibilityState === "visible") {
+                runningContext.resume().catch((error) => {
+                  console.warn(
+                    "Audio context resume on visibility change failed",
+                    error
+                  );
+                });
+              }
+            };
+
+            runningContext.addEventListener("statechange", handleStateChange);
+            document.addEventListener(
+              "visibilitychange",
+              handleVisibilityChange
+            );
+
+            audioContextCleanup.current = () => {
+              runningContext.removeEventListener(
+                "statechange",
+                handleStateChange
+              );
+              document.removeEventListener(
+                "visibilitychange",
+                handleVisibilityChange
+              );
+            };
+          }
         } catch (error) {
           console.error("Audio initialization failed:", error);
           setAudioStatus({
-            message: "Audio failed to initialize",
+            message: "Audio failed to initialize. Tap again to retry.",
             progress: null,
           });
           audioInitPromise.current = null;
+          audioInitialized.current = false;
           throw error;
         }
       })();
     }
 
     return audioInitPromise.current;
-  }, []);
+  }, [createDrumSounds]);
 
   // Get random bright color
   const getRandomColor = () =>
@@ -186,6 +364,12 @@ export default function App() {
   const getDrumIndex = (y: number, containerHeight: number) => {
     return Math.floor((y / containerHeight) * drumsRef.current.length);
   };
+
+  useEffect(() => {
+    return () => {
+      audioContextCleanup.current?.();
+    };
+  }, []);
 
   // Play drum sound
   const playDrum = useCallback(
