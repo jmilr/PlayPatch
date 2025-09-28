@@ -67,6 +67,7 @@ export default function App() {
   const drumsRef = useRef<any[]>([]);
   const synthsRef = useRef<Map<number, SynthWithFilter>>(new Map());
   const audioInitialized = useRef(false);
+  const audioInitPromise = useRef<Promise<void> | null>(null);
   const mouseId = useRef(999999); // Fixed ID for mouse events
   const effectIdCounter = useRef(0); // Counter for unique effect IDs
 
@@ -117,25 +118,35 @@ export default function App() {
   };
 
   // Initialize audio context and instruments
-  const initializeAudio = useCallback(async () => {
-    if (audioInitialized.current) return;
-
-    try {
-      setAudioStatus("Starting audio context...");
-      await Tone.start();
-
-      setAudioStatus("Creating drum sounds...");
-      drumsRef.current = createDrumSounds();
-
-      setAudioStatus("Audio ready!");
-      audioInitialized.current = true;
-
-      // Hide status after 2 seconds
-      setTimeout(() => setAudioStatus(""), 2000);
-    } catch (error) {
-      console.error("Audio initialization failed:", error);
-      setAudioStatus("Audio failed to initialize");
+  const initializeAudio = useCallback((): Promise<void> => {
+    if (audioInitialized.current) {
+      return Promise.resolve();
     }
+
+    if (!audioInitPromise.current) {
+      audioInitPromise.current = (async () => {
+        try {
+          setAudioStatus("Starting audio context...");
+          await Tone.start();
+
+          setAudioStatus("Creating drum sounds...");
+          drumsRef.current = createDrumSounds();
+
+          audioInitialized.current = true;
+          setAudioStatus("Audio ready!");
+
+          // Hide status after 2 seconds
+          setTimeout(() => setAudioStatus(""), 2000);
+        } catch (error) {
+          console.error("Audio initialization failed:", error);
+          setAudioStatus("Audio failed to initialize");
+          audioInitPromise.current = null;
+          throw error;
+        }
+      })();
+    }
+
+    return audioInitPromise.current;
   }, []);
 
   // Get random bright color
@@ -143,12 +154,12 @@ export default function App() {
     BRIGHT_COLORS[Math.floor(Math.random() * BRIGHT_COLORS.length)];
 
   // Convert screen position to pentatonic note
-  const getNote = (x: number, containerWidth: number) => {
+  const getNote = useCallback((x: number, containerWidth: number) => {
     const noteIndex = Math.floor(
       (x / containerWidth) * PENTATONIC_NOTES.length
     );
     return PENTATONIC_NOTES[Math.min(noteIndex, PENTATONIC_NOTES.length - 1)];
-  };
+  }, []);
 
   // Get drum index based on Y position
   const getDrumIndex = (y: number, containerHeight: number) => {
@@ -156,72 +167,92 @@ export default function App() {
   };
 
   // Play drum sound
-  const playDrum = (y: number, containerHeight: number) => {
-    const drumIndex = getDrumIndex(y, containerHeight);
-    const drum = drumsRef.current[drumIndex];
-
-    if (drum) {
+  const playDrum = useCallback(
+    async (y: number, containerHeight: number) => {
       try {
-        if (drumIndex === 0) {
-          // Kick drum - play a low note
-          drum.triggerAttackRelease("C1", "8n");
-        } else if (drumIndex === 1 || drumIndex === 2) {
-          // Snare and hi-hat - trigger noise
-          drum.triggerAttackRelease("4n");
-        } else {
-          // Cymbal - trigger metallic sound
-          drum.triggerAttackRelease("C4", "2n");
-        }
+        await initializeAudio();
       } catch (error) {
-        console.error("Drum play error:", error);
+        return;
       }
-    }
-  };
+
+      if (!audioInitialized.current || drumsRef.current.length === 0) {
+        return;
+      }
+
+      const drumIndex = getDrumIndex(y, containerHeight);
+      const drum = drumsRef.current[drumIndex];
+
+      if (drum) {
+        try {
+          if (drumIndex === 0) {
+            // Kick drum - play a low note
+            drum.triggerAttackRelease("C1", "8n");
+          } else if (drumIndex === 1 || drumIndex === 2) {
+            // Snare and hi-hat - trigger noise
+            drum.triggerAttackRelease("4n");
+          } else {
+            // Cymbal - trigger metallic sound
+            drum.triggerAttackRelease("C4", "2n");
+          }
+        } catch (error) {
+          console.error("Drum play error:", error);
+        }
+      }
+    },
+    [initializeAudio]
+  );
 
   // Play synth note
-  const playSynth = (
-    touch: Touch,
-    x: number,
-    y: number,
-    containerWidth: number,
-    containerHeight: number
-  ) => {
-    const note = getNote(x, containerWidth);
-    const filterFreq = 200 + (1 - y / containerHeight) * 2000; // Y controls filter cutoff
+  const playSynth = useCallback(
+    (
+      touch: Touch,
+      x: number,
+      y: number,
+      containerWidth: number,
+      containerHeight: number
+    ) => {
+      if (!audioInitialized.current) {
+        return;
+      }
 
-    let entry = synthsRef.current.get(touch.id);
-    if (!entry) {
-      // Create filter and synth, connect synth to filter
-      const filter = new Tone.Filter({
-        type: "lowpass",
-        frequency: filterFreq,
-        Q: 1,
-      }).toDestination();
+      const note = getNote(x, containerWidth);
+      const filterFreq = 200 + (1 - y / containerHeight) * 2000; // Y controls filter cutoff
 
-      const synth = new Tone.Synth({
-        oscillator: { type: "triangle" },
-        envelope: { attack: 0.1, decay: 0.3, sustain: 0.3, release: 1 },
-      }).connect(filter);
+      let entry = synthsRef.current.get(touch.id);
+      if (!entry) {
+        // Create filter and synth, connect synth to filter
+        const filter = new Tone.Filter({
+          type: "lowpass",
+          frequency: filterFreq,
+          Q: 1,
+        }).toDestination();
 
-      entry = { synth, filter };
-      synthsRef.current.set(touch.id, entry);
-    } else {
-      // Update filter frequency for existing synth
-      entry.filter.frequency.value = filterFreq;
-    }
+        const synth = new Tone.Synth({
+          oscillator: { type: "triangle" },
+          envelope: { attack: 0.1, decay: 0.3, sustain: 0.3, release: 1 },
+        }).connect(filter);
 
-    try {
-      entry.synth.triggerAttackRelease(note, "4n");
-    } catch (error) {
-      console.error("Synth play error:", error);
-    }
-  };
+        entry = { synth, filter };
+        synthsRef.current.set(touch.id, entry);
+      } else {
+        // Update filter frequency for existing synth
+        entry.filter.frequency.value = filterFreq;
+      }
+
+      try {
+        entry.synth.triggerAttackRelease(note, "4n");
+      } catch (error) {
+        console.error("Synth play error:", error);
+      }
+    },
+  [getNote]
+  );
 
   // Handle touch start
   const handleTouchStart = useCallback(
     (e: React.TouchEvent) => {
       e.preventDefault();
-      initializeAudio();
+      initializeAudio().catch(() => {});
 
       const container = containerRef.current;
       if (!container) return;
@@ -268,7 +299,7 @@ export default function App() {
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
-      initializeAudio();
+      initializeAudio().catch(() => {});
       setIsMouseDown(true);
 
       const container = containerRef.current;
@@ -357,6 +388,7 @@ export default function App() {
                       ...(effect.trail || []),
                       { x, y, timestamp: Date.now() },
                     ].slice(-30), // Keep last 30 points for smoother trail
+                    timestamp: Date.now(),
                   };
                 }
                 return effect;
@@ -368,7 +400,7 @@ export default function App() {
         return newTouches;
       });
     });
-  }, []);
+  }, [playSynth]);
 
   // Handle mouse move
   const handleMouseMove = useCallback(
@@ -419,6 +451,7 @@ export default function App() {
                       ...(effect.trail || []),
                       { x, y, timestamp: Date.now() },
                     ].slice(-30), // Keep last 30 points for smoother trail
+                    timestamp: Date.now(),
                   };
                 }
                 return effect;
@@ -430,74 +463,59 @@ export default function App() {
         return newTouches;
       });
     },
-    [isMouseDown]
+    [isMouseDown, playSynth]
   );
 
   // Handle touch end
-  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
+  const handleTouchEnd = useCallback(
+    async (e: React.TouchEvent) => {
+      e.preventDefault();
 
-    const container = containerRef.current;
-    if (!container) return;
+      const container = containerRef.current;
+      if (!container) return;
 
-    const rect = container.getBoundingClientRect();
-    const endedTouches = Array.from(e.changedTouches);
-
-    endedTouches.forEach((touch) => {
-      const touchId = touch.identifier;
+      const rect = container.getBoundingClientRect();
+      const endedTouchIds = Array.from(e.changedTouches).map(
+        (touch) => touch.identifier
+      );
+      const touchesToHandle: Touch[] = [];
 
       setTouches((prev) => {
         const newTouches = new Map(prev);
-        const existingTouch = newTouches.get(touchId);
-
-        if (existingTouch) {
-          // If it was a tap (not drag), play drum sound
-          if (!existingTouch.isDragging) {
-            playDrum(existingTouch.y, rect.height);
-          } else {
-            // Release synth for drag
-            const entry = synthsRef.current.get(touchId);
-            if (entry) {
-              try {
-                entry.synth.triggerRelease();
-              } catch (error) {
-                console.error("Synth release error:", error);
-              }
-              entry.synth.dispose();
-              entry.filter.dispose();
-              synthsRef.current.delete(touchId);
-            }
+        endedTouchIds.forEach((touchId) => {
+          const existingTouch = newTouches.get(touchId);
+          if (existingTouch) {
+            touchesToHandle.push(existingTouch);
           }
-        }
-
-        newTouches.delete(touchId);
+          newTouches.delete(touchId);
+        });
         return newTouches;
       });
-    });
-  }, []);
 
-  // Handle mouse end
-  const handleMouseUp = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsMouseDown(false);
+      if (touchesToHandle.length === 0) {
+        return;
+      }
 
-    const container = containerRef.current;
-    if (!container) return;
+      try {
+        await initializeAudio();
+      } catch (error) {
+        return;
+      }
 
-    const rect = container.getBoundingClientRect();
-    const touchId = mouseId.current;
+      const endedTouchIdSet = new Set(endedTouchIds);
+      setVisualEffects((prev) =>
+        prev.map((effect) =>
+          endedTouchIdSet.has(effect.touchId)
+            ? { ...effect, timestamp: Date.now() }
+            : effect
+        )
+      );
 
-    setTouches((prev) => {
-      const newTouches = new Map(prev);
-      const existingTouch = newTouches.get(touchId);
-
-      if (existingTouch) {
-        // If it was a tap (not drag), play drum sound
+      touchesToHandle.forEach((existingTouch) => {
         if (!existingTouch.isDragging) {
-          playDrum(existingTouch.y, rect.height);
+          void playDrum(existingTouch.y, rect.height);
         } else {
-          // Release synth for drag
-          const entry = synthsRef.current.get(touchId);
+          const entry = synthsRef.current.get(existingTouch.id);
           if (entry) {
             try {
               entry.synth.triggerRelease();
@@ -506,15 +524,75 @@ export default function App() {
             }
             entry.synth.dispose();
             entry.filter.dispose();
-            synthsRef.current.delete(touchId);
+            synthsRef.current.delete(existingTouch.id);
           }
         }
+      });
+    },
+    [initializeAudio, playDrum]
+  );
+
+  // Handle mouse end
+  const handleMouseUp = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsMouseDown(false);
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const touchId = mouseId.current;
+      let touchToHandle: Touch | undefined;
+
+      setTouches((prev) => {
+        const newTouches = new Map(prev);
+        const existingTouch = newTouches.get(touchId);
+
+        if (existingTouch) {
+          touchToHandle = existingTouch;
+          newTouches.delete(touchId);
+        }
+
+        return newTouches;
+      });
+
+      if (!touchToHandle) {
+        return;
       }
 
-      newTouches.delete(touchId);
-      return newTouches;
-    });
-  }, []);
+      try {
+        await initializeAudio();
+      } catch (error) {
+        return;
+      }
+
+      setVisualEffects((prev) =>
+        prev.map((effect) =>
+          effect.touchId === touchId
+            ? { ...effect, timestamp: Date.now() }
+            : effect
+        )
+      );
+
+      if (!touchToHandle.isDragging) {
+        void playDrum(touchToHandle.y, rect.height);
+      } else {
+        const entry = synthsRef.current.get(touchId);
+        if (entry) {
+          try {
+            entry.synth.triggerRelease();
+          } catch (error) {
+            console.error("Synth release error:", error);
+          }
+          entry.synth.dispose();
+          entry.filter.dispose();
+          synthsRef.current.delete(touchId);
+        }
+      }
+    },
+    [initializeAudio, playDrum]
+  );
 
   // Clean up old visual effects
   useEffect(() => {
