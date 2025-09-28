@@ -59,9 +59,15 @@ const PENTATONIC_NOTES = [
 export default function App() {
   const [touches, setTouches] = useState<Map<number, Touch>>(new Map());
   const [visualEffects, setVisualEffects] = useState<VisualEffect[]>([]);
-  const [audioStatus, setAudioStatus] = useState<string>(
-    "Click to start audio"
-  );
+  interface AudioStatusState {
+    message: string;
+    progress: number | null;
+  }
+
+  const [audioStatus, setAudioStatus] = useState<AudioStatusState>({
+    message: "Click to start audio",
+    progress: null,
+  });
   const [isMouseDown, setIsMouseDown] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const drumsRef = useRef<any[]>([]);
@@ -126,20 +132,35 @@ export default function App() {
     if (!audioInitPromise.current) {
       audioInitPromise.current = (async () => {
         try {
-          setAudioStatus("Starting audio context...");
+          setAudioStatus({
+            message: "Starting audio context...",
+            progress: 0.25,
+          });
           await Tone.start();
 
-          setAudioStatus("Creating drum sounds...");
+          setAudioStatus({
+            message: "Creating drum sounds...",
+            progress: 0.6,
+          });
           drumsRef.current = createDrumSounds();
 
           audioInitialized.current = true;
-          setAudioStatus("Audio ready!");
+          setAudioStatus({
+            message: "Audio ready!",
+            progress: 1,
+          });
 
           // Hide status after 2 seconds
-          setTimeout(() => setAudioStatus(""), 2000);
+          setTimeout(
+            () => setAudioStatus({ message: "", progress: null }),
+            2000
+          );
         } catch (error) {
           console.error("Audio initialization failed:", error);
-          setAudioStatus("Audio failed to initialize");
+          setAudioStatus({
+            message: "Audio failed to initialize",
+            progress: null,
+          });
           audioInitPromise.current = null;
           throw error;
         }
@@ -695,7 +716,7 @@ export default function App() {
         onContextMenu={(e) => e.preventDefault()}
       >
         {/* Audio Status Indicator */}
-        {audioStatus && (
+        {audioStatus.message && (
           <div
             style={{
               position: "absolute",
@@ -710,7 +731,28 @@ export default function App() {
               zIndex: 10,
             }}
           >
-            {audioStatus}
+            <div>{audioStatus.message}</div>
+            {audioStatus.progress !== null && (
+              <div
+                style={{
+                  marginTop: 8,
+                  width: "100%",
+                  height: 6,
+                  borderRadius: 999,
+                  background: "rgba(255,255,255,0.2)",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${Math.min(Math.max(audioStatus.progress, 0), 1) * 100}%`,
+                    height: "100%",
+                    background: "linear-gradient(90deg, #F59E0B, #10B981)",
+                    transition: "width 0.3s ease",
+                  }}
+                />
+              </div>
+            )}
           </div>
         )}
 
