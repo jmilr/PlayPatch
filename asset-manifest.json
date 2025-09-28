@@ -1,13 +1,13 @@
 {
   "files": {
     "main.css": "/PlayPatch/static/css/main.38bf393a.css",
-    "main.js": "/PlayPatch/static/js/main.e61f6c0f.js",
+    "main.js": "/PlayPatch/static/js/main.bf923a4b.js",
     "index.html": "/PlayPatch/index.html",
     "main.38bf393a.css.map": "/PlayPatch/static/css/main.38bf393a.css.map",
-    "main.e61f6c0f.js.map": "/PlayPatch/static/js/main.e61f6c0f.js.map"
+    "main.bf923a4b.js.map": "/PlayPatch/static/js/main.bf923a4b.js.map"
   },
   "entrypoints": [
     "static/css/main.38bf393a.css",
-    "static/js/main.e61f6c0f.js"
+    "static/js/main.bf923a4b.js"
   ]
 }
