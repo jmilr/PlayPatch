@@ -19,6 +19,21 @@ interface Voice {
   gain: GainNode;
 }
 
+interface Particle {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  ttl: number;
+  size: number;
+  r: number;
+  g: number;
+  b: number;
+  alpha: number;
+}
+
 const COLOR_PALETTE = [
   "#38bdf8",
   "#f472b6",
@@ -48,6 +63,15 @@ const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
 const pickColor = (id: number) => COLOR_PALETTE[id % COLOR_PALETTE.length];
+
+const hexToRgb = (hex: string) => {
+  const normalized = hex.replace("#", "");
+  const bigint = parseInt(normalized, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return { r, g, b };
+};
 
 const createSilentKick = (context: AudioContext) => {
   const buffer = context.createBuffer(1, 1, context.sampleRate);
@@ -96,9 +120,13 @@ export default function App() {
   const unlockedRef = useRef(false);
   const voicesRef = useRef<Map<number, Voice>>(new Map());
   const releaseTimersRef = useRef<Map<number, number>>(new Map());
+  const activePointersRef = useRef<Set<number>>(new Set());
+  const particlesRef = useRef<Particle[]>([]);
+  const particleIdRef = useRef(0);
 
   const [touchPoints, setTouchPoints] = useState<Map<number, TouchPoint>>(new Map());
   const [statusMessage, setStatusMessage] = useState("Touch or click to play");
+  const [particles, setParticles] = useState<Particle[]>([]);
   const hasActiveTouches = touchPoints.size > 0;
 
   const ensureAudioContext = useCallback(async () => {
@@ -122,6 +150,36 @@ export default function App() {
     }
 
     return context;
+  }, []);
+
+  const spawnParticles = useCallback((x: number, y: number, color: string) => {
+    const { r, g, b } = hexToRgb(color);
+    const particlesToAdd: Particle[] = Array.from({ length: 6 }, () => {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 120;
+      const ttl = 0.6 + Math.random() * 0.4;
+      return {
+        id: particleIdRef.current++,
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: ttl,
+        ttl,
+        size: 24 + Math.random() * 16,
+        r,
+        g,
+        b,
+        alpha: 0.55 + Math.random() * 0.35,
+      };
+    });
+
+    particlesRef.current = [...particlesRef.current, ...particlesToAdd];
+    if (particlesRef.current.length > 240) {
+      particlesRef.current = particlesRef.current.slice(
+        particlesRef.current.length - 240
+      );
+    }
   }, []);
 
   const updateTouchPoint = useCallback((point: TouchPoint | null) => {
@@ -195,6 +253,9 @@ export default function App() {
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
       const pointerId = event.pointerId;
+      const pointerColor = pickColor(pointerId);
+
+      activePointersRef.current.add(pointerId);
 
       event.currentTarget.setPointerCapture?.(pointerId);
 
@@ -204,6 +265,7 @@ export default function App() {
       } catch (error) {
         console.error("Unable to create audio context", error);
         setStatusMessage("Audio is not supported in this browser");
+        activePointersRef.current.delete(pointerId);
         return;
       }
 
@@ -211,6 +273,10 @@ export default function App() {
       if (releaseTimer) {
         window.clearTimeout(releaseTimer);
         releaseTimersRef.current.delete(pointerId);
+      }
+
+      if (!activePointersRef.current.has(pointerId)) {
+        return;
       }
 
       const oscillator = context.createOscillator();
@@ -233,16 +299,18 @@ export default function App() {
 
       voicesRef.current.set(pointerId, { oscillator, gain });
 
+      spawnParticles(x, y, pointerColor);
+
       updateTouchPoint({
         id: pointerId,
         x,
         y,
-        color: pickColor(pointerId),
+        color: pointerColor,
       });
 
       setStatusMessage("Slide around to explore the scale");
     },
-    [ensureAudioContext, updateTouchPoint]
+    [ensureAudioContext, spawnParticles, updateTouchPoint]
   );
 
   const handlePointerMove = useCallback(
@@ -271,20 +339,25 @@ export default function App() {
       voice.gain.gain.cancelScheduledValues(now);
       voice.gain.gain.linearRampToValueAtTime(level, now + 0.08);
 
+      const pointerColor = pickColor(event.pointerId);
+
       updateTouchPoint({
         id: event.pointerId,
         x,
         y,
-        color: pickColor(event.pointerId),
+        color: pointerColor,
       });
+
+      spawnParticles(x, y, pointerColor);
     },
-    [updateTouchPoint]
+    [spawnParticles, updateTouchPoint]
   );
 
   const handlePointerUp = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
 
+      activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
 
@@ -297,6 +370,7 @@ export default function App() {
 
   const handlePointerCancel = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
 
@@ -324,6 +398,7 @@ export default function App() {
       });
       voicesRef.current.clear();
       releaseTimersRef.current.clear();
+      activePointersRef.current.clear();
       audioContextRef.current?.close().catch((error) => {
         console.warn("Audio context close failed", error);
       });
@@ -340,6 +415,44 @@ export default function App() {
       setStatusMessage("Touch or click to play");
     }
   }, [touchPoints]);
+
+  useEffect(() => {
+    let animationFrame: number;
+    let lastTime: number | null = null;
+
+    const tick = (time: number) => {
+      if (lastTime === null) {
+        lastTime = time;
+      }
+
+      const delta = (time - lastTime) / 1000;
+      lastTime = time;
+
+      if (particlesRef.current.length > 0) {
+        const nextParticles = particlesRef.current
+          .map((particle) => ({
+            ...particle,
+            life: particle.life - delta,
+            x: particle.x + particle.vx * delta,
+            y: particle.y + particle.vy * delta,
+          }))
+          .filter((particle) => particle.life > 0);
+
+        particlesRef.current = nextParticles;
+        setParticles(nextParticles);
+      } else {
+        setParticles((prev) => (prev.length > 0 ? [] : prev));
+      }
+
+      animationFrame = window.requestAnimationFrame(tick);
+    };
+
+    animationFrame = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, []);
 
   return (
     <div
@@ -428,6 +541,33 @@ export default function App() {
           }}
         />
       ))}
+
+      {particles.map((particle) => {
+        const lifeRatio = particle.life / particle.ttl;
+        const intensity = Math.max(0, Math.min(1, lifeRatio * particle.alpha));
+        return (
+          <div
+            key={particle.id}
+            style={{
+              position: "absolute",
+              pointerEvents: "none",
+              left: particle.x - particle.size / 2,
+              top: particle.y - particle.size / 2,
+              width: particle.size,
+              height: particle.size,
+              borderRadius: "50%",
+              background: `radial-gradient(circle, rgba(${particle.r}, ${
+                particle.g
+              }, ${particle.b}, ${intensity}) 0%, rgba(15, 23, 42, 0) 65%)`,
+              boxShadow: `0 0 ${particle.size * 1.6}px ${particle.size * 0.4}px rgba(${particle.r}, ${
+                particle.g
+              }, ${particle.b}, ${intensity * 0.6})`,
+              opacity: intensity,
+              transform: "scale(1)",
+            }}
+          />
+        );
+      })}
     </div>
   );
 }
