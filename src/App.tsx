@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { AuroraField, AuroraVariant } from "./effects/AuroraField";
+import { clamp } from "./utils/math";
 
 // Allow older Safari builds to expose the prefixed AudioContext constructor.
 declare global {
@@ -17,22 +25,23 @@ interface TouchPoint {
 interface Voice {
   oscillator: OscillatorNode;
   gain: GainNode;
+  filter: BiquadFilterNode;
+  panner?: StereoPannerNode;
+  instrument: InstrumentType;
 }
 
-interface Particle {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  ttl: number;
-  size: number;
-  r: number;
-  g: number;
-  b: number;
-  alpha: number;
+interface PointerMeta {
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  totalDistance: number;
+  startTime: number;
+  instrumentLocked: boolean;
+  triggeredShimmer: boolean;
 }
+
+type InstrumentType = "lead" | "pad";
 
 const COLOR_PALETTE = [
   "#38bdf8",
@@ -59,18 +68,13 @@ const PENTATONIC_FREQUENCIES = [
   880.0, // A5
 ];
 
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(Math.max(value, min), max);
-
 const pickColor = (id: number) => COLOR_PALETTE[id % COLOR_PALETTE.length];
 
-const hexToRgb = (hex: string) => {
-  const normalized = hex.replace("#", "");
-  const bigint = parseInt(normalized, 16);
-  const r = (bigint >> 16) & 255;
-  const g = (bigint >> 8) & 255;
-  const b = bigint & 255;
-  return { r, g, b };
+const getPanForPosition = (x: number, width: number) => {
+  if (width <= 0) {
+    return 0;
+  }
+  return clamp((x / width) * 2 - 1, -1, 1);
 };
 
 const createSilentKick = (context: AudioContext) => {
@@ -116,17 +120,17 @@ const getGainForPosition = (y: number, height: number) => {
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const auroraFieldRef = useRef<AuroraField | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
   const voicesRef = useRef<Map<number, Voice>>(new Map());
   const releaseTimersRef = useRef<Map<number, number>>(new Map());
   const activePointersRef = useRef<Set<number>>(new Set());
-  const particlesRef = useRef<Particle[]>([]);
-  const particleIdRef = useRef(0);
+  const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
 
   const [touchPoints, setTouchPoints] = useState<Map<number, TouchPoint>>(new Map());
   const [statusMessage, setStatusMessage] = useState("Touch or click to play");
-  const [particles, setParticles] = useState<Particle[]>([]);
   const hasActiveTouches = touchPoints.size > 0;
 
   const ensureAudioContext = useCallback(async () => {
@@ -152,35 +156,100 @@ export default function App() {
     return context;
   }, []);
 
-  const spawnParticles = useCallback((x: number, y: number, color: string) => {
-    const { r, g, b } = hexToRgb(color);
-    const particlesToAdd: Particle[] = Array.from({ length: 6 }, () => {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 40 + Math.random() * 120;
-      const ttl = 0.6 + Math.random() * 0.4;
-      return {
-        id: particleIdRef.current++,
-        x,
-        y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: ttl,
-        ttl,
-        size: 24 + Math.random() * 16,
-        r,
-        g,
-        b,
-        alpha: 0.55 + Math.random() * 0.35,
-      };
-    });
+  const spawnParticles = useCallback(
+    (x: number, y: number, color: string, variant: AuroraVariant) => {
+      auroraFieldRef.current?.spawnBurst(x, y, color, variant);
+    },
+    []
+  );
 
-    particlesRef.current = [...particlesRef.current, ...particlesToAdd];
-    if (particlesRef.current.length > 240) {
-      particlesRef.current = particlesRef.current.slice(
-        particlesRef.current.length - 240
-      );
-    }
-  }, []);
+  const triggerBellChime = useCallback(
+    (x: number, y: number, color: string, baseFrequency: number) => {
+      const context = audioContextRef.current;
+      if (!context) {
+        return;
+      }
+
+      const now = context.currentTime;
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      const shimmer = context.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(baseFrequency, now);
+      osc.frequency.exponentialRampToValueAtTime(baseFrequency * 2, now + 0.5);
+
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.4, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
+
+      shimmer.gain.setValueAtTime(0.0001, now);
+      shimmer.gain.exponentialRampToValueAtTime(1, now + 0.04);
+      shimmer.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+
+      osc.connect(shimmer);
+      shimmer.connect(gain);
+      gain.connect(context.destination);
+
+      osc.start(now);
+      osc.stop(now + 1.2);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          shimmer.disconnect();
+          gain.disconnect();
+        } catch (error) {
+          console.warn("Chime cleanup failed", error);
+        }
+      };
+
+      spawnParticles(x, y, color, "chime");
+    },
+    [spawnParticles]
+  );
+
+  const triggerShimmerArpeggio = useCallback(
+    (x: number, y: number, color: string, baseFrequency: number) => {
+      const context = audioContextRef.current;
+      if (!context) {
+        return;
+      }
+
+      const now = context.currentTime;
+      const intervals = [0, 7, 12, 19];
+
+      intervals.forEach((semitones, index) => {
+        const start = now + index * 0.08;
+        const osc = context.createOscillator();
+        const gain = context.createGain();
+
+        osc.type = "sine";
+        const frequency = baseFrequency * Math.pow(2, semitones / 12);
+        osc.frequency.setValueAtTime(frequency, start);
+
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.22, start + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.6);
+
+        osc.connect(gain);
+        gain.connect(context.destination);
+
+        osc.start(start);
+        osc.stop(start + 0.65);
+        osc.onended = () => {
+          try {
+            osc.disconnect();
+            gain.disconnect();
+          } catch (error) {
+            console.warn("Shimmer cleanup failed", error);
+          }
+        };
+      });
+
+      spawnParticles(x, y, color, "shimmer");
+    },
+    [spawnParticles]
+  );
 
   const updateTouchPoint = useCallback((point: TouchPoint | null) => {
     setTouchPoints((prev) => {
@@ -228,6 +297,8 @@ export default function App() {
       const timeoutId = window.setTimeout(() => {
         try {
           voice.oscillator.disconnect();
+          voice.filter.disconnect();
+          voice.panner?.disconnect();
           voice.gain.disconnect();
         } catch (error) {
           console.warn("Voice disconnect failed", error);
@@ -281,10 +352,24 @@ export default function App() {
 
       const oscillator = context.createOscillator();
       oscillator.type = "sine";
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(14000, context.currentTime);
+      filter.Q.setValueAtTime(0.001, context.currentTime);
+
       const gain = context.createGain();
       gain.gain.value = 0;
 
-      oscillator.connect(gain);
+      let panner: StereoPannerNode | undefined;
+      if (context.createStereoPanner) {
+        panner = context.createStereoPanner();
+        oscillator.connect(panner);
+        panner.connect(filter);
+      } else {
+        oscillator.connect(filter);
+      }
+
+      filter.connect(gain);
       gain.connect(context.destination);
 
       const frequency = getFrequencyForPosition(x, rect.width);
@@ -297,9 +382,31 @@ export default function App() {
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(gainValue, now + 0.06);
 
-      voicesRef.current.set(pointerId, { oscillator, gain });
+      if (panner) {
+        const panPosition = getPanForPosition(x, rect.width);
+        panner.pan.setValueAtTime(panPosition, now);
+      }
 
-      spawnParticles(x, y, pointerColor);
+      voicesRef.current.set(pointerId, {
+        oscillator,
+        gain,
+        filter,
+        panner,
+        instrument: "lead",
+      });
+
+      pointerMetaRef.current.set(pointerId, {
+        startX: x,
+        startY: y,
+        lastX: x,
+        lastY: y,
+        totalDistance: 0,
+        startTime: performance.now(),
+        instrumentLocked: false,
+        triggeredShimmer: false,
+      });
+
+      spawnParticles(x, y, pointerColor, "lead");
 
       updateTouchPoint({
         id: pointerId,
@@ -308,7 +415,7 @@ export default function App() {
         color: pointerColor,
       });
 
-      setStatusMessage("Slide around to explore the scale");
+      setStatusMessage("Slide around to explore expressive gestures");
     },
     [ensureAudioContext, spawnParticles, updateTouchPoint]
   );
@@ -318,7 +425,8 @@ export default function App() {
       const voice = voicesRef.current.get(event.pointerId);
       const container = containerRef.current;
       const context = audioContextRef.current;
-      if (!voice || !container || !context) {
+      const meta = pointerMetaRef.current.get(event.pointerId);
+      if (!voice || !container || !context || !meta) {
         return;
       }
 
@@ -326,20 +434,95 @@ export default function App() {
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
 
-      const frequency = getFrequencyForPosition(x, rect.width);
-      const level = getGainForPosition(y, rect.height);
-      const now = context.currentTime;
-
-      voice.oscillator.frequency.cancelScheduledValues(now);
-      voice.oscillator.frequency.linearRampToValueAtTime(
-        frequency,
-        now + 0.05
-      );
-
-      voice.gain.gain.cancelScheduledValues(now);
-      voice.gain.gain.linearRampToValueAtTime(level, now + 0.08);
+      const dx = x - meta.lastX;
+      const dy = y - meta.lastY;
+      const distance = Math.hypot(dx, dy);
+      meta.lastX = x;
+      meta.lastY = y;
+      meta.totalDistance += distance;
 
       const pointerColor = pickColor(event.pointerId);
+
+      if (!meta.triggeredShimmer) {
+        const totalDx = x - meta.startX;
+        const totalDy = y - meta.startY;
+        const absDx = Math.abs(totalDx);
+        const absDy = Math.abs(totalDy);
+
+        if (!meta.instrumentLocked) {
+          if (
+            absDx > 60 &&
+            absDy > 60 &&
+            Math.abs(absDx - absDy) < 40
+          ) {
+            meta.triggeredShimmer = true;
+            pointerMetaRef.current.set(event.pointerId, meta);
+
+            const baseFrequency = getFrequencyForPosition(x, rect.width);
+            stopVoice(event.pointerId);
+            triggerShimmerArpeggio(x, y, pointerColor, baseFrequency);
+            updateTouchPoint({
+              id: event.pointerId,
+              x,
+              y,
+              color: pointerColor,
+            });
+            setStatusMessage("Diagonal flares trigger sparkling arpeggios");
+            return;
+          }
+
+          if (absDy > absDx * 1.35 && absDy > 50 && voice.instrument !== "pad") {
+            const now = context.currentTime;
+            voice.instrument = "pad";
+            voice.oscillator.type = "triangle";
+            voice.filter.frequency.cancelScheduledValues(now);
+            voice.filter.frequency.setValueAtTime(1200, now);
+            voice.filter.Q.setValueAtTime(3.2, now);
+            meta.instrumentLocked = true;
+            setStatusMessage("Vertical drifts unlock the mellow pad");
+          } else if (absDx > 40) {
+            meta.instrumentLocked = true;
+          }
+        }
+
+        const frequency = getFrequencyForPosition(x, rect.width);
+        const level = getGainForPosition(y, rect.height);
+        const now = context.currentTime;
+
+        voice.oscillator.frequency.cancelScheduledValues(now);
+        voice.oscillator.frequency.linearRampToValueAtTime(
+          frequency,
+          now + (voice.instrument === "pad" ? 0.12 : 0.05)
+        );
+
+        if (voice.instrument === "pad") {
+          const padLevel = clamp(level * 1.35, 0.12, 0.78);
+          voice.gain.gain.cancelScheduledValues(now);
+          voice.gain.gain.linearRampToValueAtTime(padLevel, now + 0.18);
+          const cutoff = clamp(
+            420 + (1 - clamp(y / rect.height, 0, 1)) * 2000,
+            360,
+            2600
+          );
+          voice.filter.frequency.cancelScheduledValues(now);
+          voice.filter.frequency.linearRampToValueAtTime(cutoff, now + 0.18);
+          voice.filter.Q.cancelScheduledValues(now);
+          voice.filter.Q.linearRampToValueAtTime(4.2, now + 0.18);
+
+          spawnParticles(x, y, pointerColor, "pad");
+        } else {
+          voice.gain.gain.cancelScheduledValues(now);
+          voice.gain.gain.linearRampToValueAtTime(level, now + 0.08);
+          if (voice.panner) {
+            const panPosition = getPanForPosition(x, rect.width);
+            voice.panner.pan.cancelScheduledValues(now);
+            voice.panner.pan.linearRampToValueAtTime(panPosition, now + 0.12);
+          }
+
+          const variant: AuroraVariant = distance > 90 ? "shimmer" : "lead";
+          spawnParticles(x, y, pointerColor, variant);
+        }
+      }
 
       updateTouchPoint({
         id: event.pointerId,
@@ -347,10 +530,8 @@ export default function App() {
         y,
         color: pointerColor,
       });
-
-      spawnParticles(x, y, pointerColor);
     },
-    [spawnParticles, updateTouchPoint]
+    [stopVoice, triggerShimmerArpeggio, spawnParticles, updateTouchPoint]
   );
 
   const handlePointerUp = useCallback(
@@ -361,11 +542,35 @@ export default function App() {
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
 
+      const meta = pointerMetaRef.current.get(event.pointerId);
+      pointerMetaRef.current.delete(event.pointerId);
+
+      const container = containerRef.current;
+      const context = audioContextRef.current;
+      if (!container || !context || !meta || meta.triggeredShimmer) {
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const duration = performance.now() - meta.startTime;
+
+      if (duration < 220 && meta.totalDistance < 32) {
+        const frequency = getFrequencyForPosition(meta.startX, rect.width);
+        const pointerColor = pickColor(event.pointerId);
+        triggerBellChime(x, y, pointerColor, frequency);
+        setStatusMessage("Quick taps unleash crystalline chimes");
+      }
+
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     },
-    [removeTouchPoint, stopVoice]
+    [removeTouchPoint, stopVoice, triggerBellChime]
   );
 
   const handlePointerCancel = useCallback(
@@ -373,6 +578,7 @@ export default function App() {
       activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
+      pointerMetaRef.current.delete(event.pointerId);
 
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
@@ -387,6 +593,8 @@ export default function App() {
         try {
           voice.oscillator.stop();
           voice.oscillator.disconnect();
+          voice.filter.disconnect();
+          voice.panner?.disconnect();
           voice.gain.disconnect();
         } catch (error) {
           console.warn("Voice cleanup failed", error);
@@ -417,40 +625,30 @@ export default function App() {
   }, [touchPoints]);
 
   useEffect(() => {
-    let animationFrame: number;
-    let lastTime: number | null = null;
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) {
+      return;
+    }
 
-    const tick = (time: number) => {
-      if (lastTime === null) {
-        lastTime = time;
-      }
+    const aurora = new AuroraField(canvas);
+    auroraFieldRef.current = aurora;
 
-      const delta = (time - lastTime) / 1000;
-      lastTime = time;
-
-      if (particlesRef.current.length > 0) {
-        const nextParticles = particlesRef.current
-          .map((particle) => ({
-            ...particle,
-            life: particle.life - delta,
-            x: particle.x + particle.vx * delta,
-            y: particle.y + particle.vy * delta,
-          }))
-          .filter((particle) => particle.life > 0);
-
-        particlesRef.current = nextParticles;
-        setParticles(nextParticles);
-      } else {
-        setParticles((prev) => (prev.length > 0 ? [] : prev));
-      }
-
-      animationFrame = window.requestAnimationFrame(tick);
+    const resize = () => {
+      const rect = container.getBoundingClientRect();
+      aurora.resize(rect.width, rect.height);
     };
 
-    animationFrame = window.requestAnimationFrame(tick);
+    resize();
+    aurora.start();
+
+    const observer = new ResizeObserver(resize);
+    observer.observe(container);
 
     return () => {
-      window.cancelAnimationFrame(animationFrame);
+      observer.disconnect();
+      aurora.destroy();
+      auroraFieldRef.current = null;
     };
   }, []);
 
@@ -468,10 +666,9 @@ export default function App() {
         alignItems: "center",
         justifyContent: "center",
         background:
-          "radial-gradient(circle at 20% 20%, rgba(59,130,246,0.35), transparent 45%)," +
-          "radial-gradient(circle at 80% 25%, rgba(248,113,113,0.3), transparent 50%)," +
-          "radial-gradient(circle at 50% 80%, rgba(34,197,94,0.28), transparent 55%)," +
-          "#0f172a",
+          "radial-gradient(circle at 20% 25%, rgba(34,197,94,0.28), transparent 55%)," +
+          "radial-gradient(circle at 80% 20%, rgba(59,130,246,0.24), transparent 50%)," +
+          "linear-gradient(140deg, #020617 0%, #0f172a 45%, #1e1b4b 100%)",
         color: "#f8fafc",
         fontFamily: "'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         userSelect: "none",
@@ -480,6 +677,18 @@ export default function App() {
         overflow: "hidden",
       }}
     >
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+          filter: "blur(0.3px)",
+        }}
+      />
+
       <div
         style={{
           position: "absolute",
@@ -501,11 +710,11 @@ export default function App() {
         <div
           style={{
             textAlign: "center",
-            maxWidth: 420,
-            padding: "32px 24px",
-            borderRadius: 32,
+            maxWidth: 460,
+            padding: "36px 28px",
+            borderRadius: 36,
             backgroundColor: "rgba(15, 23, 42, 0.55)",
-            boxShadow: "0 40px 120px rgba(15, 23, 42, 0.45)",
+            boxShadow: "0 40px 120px rgba(8, 47, 73, 0.45)",
             backdropFilter: "blur(12px)",
           }}
         >
@@ -514,10 +723,11 @@ export default function App() {
             PlayPatch
           </h1>
           <p style={{ fontSize: 18, margin: "0 0 6px", opacity: 0.9 }}>
-            Slide your finger or mouse to paint sound.
+            Slide, drift, and flick to paint sound with light.
           </p>
           <p style={{ fontSize: 14, margin: 0, opacity: 0.75 }}>
-            Every horizontal position maps to a note in a warm pentatonic scale.
+            Horizontal glides play the lead, vertical sweeps bloom a pad, and
+            quick taps sparkle with crystalline chimes.
           </p>
         </div>
       )}
@@ -541,33 +751,6 @@ export default function App() {
           }}
         />
       ))}
-
-      {particles.map((particle) => {
-        const lifeRatio = particle.life / particle.ttl;
-        const intensity = Math.max(0, Math.min(1, lifeRatio * particle.alpha));
-        return (
-          <div
-            key={particle.id}
-            style={{
-              position: "absolute",
-              pointerEvents: "none",
-              left: particle.x - particle.size / 2,
-              top: particle.y - particle.size / 2,
-              width: particle.size,
-              height: particle.size,
-              borderRadius: "50%",
-              background: `radial-gradient(circle, rgba(${particle.r}, ${
-                particle.g
-              }, ${particle.b}, ${intensity}) 0%, rgba(15, 23, 42, 0) 65%)`,
-              boxShadow: `0 0 ${particle.size * 1.6}px ${particle.size * 0.4}px rgba(${particle.r}, ${
-                particle.g
-              }, ${particle.b}, ${intensity * 0.6})`,
-              opacity: intensity,
-              transform: "scale(1)",
-            }}
-          />
-        );
-      })}
     </div>
   );
 }
