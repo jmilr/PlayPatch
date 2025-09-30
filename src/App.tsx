@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AuroraField, AuroraVariant } from "./effects/AuroraField";
+import { RainbowField } from "./effects/RainbowField";
 import { clamp } from "./utils/math";
 
 // Allow older Safari builds to expose the prefixed AudioContext constructor.
@@ -121,7 +121,7 @@ const getGainForPosition = (y: number, height: number) => {
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const auroraFieldRef = useRef<AuroraField | null>(null);
+  const rainbowFieldRef = useRef<RainbowField | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const unlockedRef = useRef(false);
   const voicesRef = useRef<Map<number, Voice>>(new Map());
@@ -156,15 +156,8 @@ export default function App() {
     return context;
   }, []);
 
-  const spawnParticles = useCallback(
-    (x: number, y: number, color: string, variant: AuroraVariant) => {
-      auroraFieldRef.current?.spawnBurst(x, y, color, variant);
-    },
-    []
-  );
-
   const triggerBellChime = useCallback(
-    (x: number, y: number, color: string, baseFrequency: number) => {
+    (x: number, y: number, baseFrequency: number) => {
       const context = audioContextRef.current;
       if (!context) {
         return;
@@ -203,13 +196,13 @@ export default function App() {
         }
       };
 
-      spawnParticles(x, y, color, "chime");
+      rainbowFieldRef.current?.pulse(x, y, baseFrequency, 1100);
     },
-    [spawnParticles]
+    []
   );
 
   const triggerShimmerArpeggio = useCallback(
-    (x: number, y: number, color: string, baseFrequency: number) => {
+    (x: number, y: number, baseFrequency: number) => {
       const context = audioContextRef.current;
       if (!context) {
         return;
@@ -246,9 +239,9 @@ export default function App() {
         };
       });
 
-      spawnParticles(x, y, color, "shimmer");
+      rainbowFieldRef.current?.pulse(x, y, baseFrequency * 1.5, 1200);
     },
-    [spawnParticles]
+    []
   );
 
   const updateTouchPoint = useCallback((point: TouchPoint | null) => {
@@ -406,8 +399,6 @@ export default function App() {
         triggeredShimmer: false,
       });
 
-      spawnParticles(x, y, pointerColor, "lead");
-
       updateTouchPoint({
         id: pointerId,
         x,
@@ -415,9 +406,11 @@ export default function App() {
         color: pointerColor,
       });
 
+      rainbowFieldRef.current?.setEmitter(pointerId, x, y, frequency);
+
       setStatusMessage("Slide around to explore expressive gestures");
     },
-    [ensureAudioContext, spawnParticles, updateTouchPoint]
+    [ensureAudioContext, updateTouchPoint]
   );
 
   const handlePointerMove = useCallback(
@@ -460,7 +453,8 @@ export default function App() {
 
             const baseFrequency = getFrequencyForPosition(x, rect.width);
             stopVoice(event.pointerId);
-            triggerShimmerArpeggio(x, y, pointerColor, baseFrequency);
+            rainbowFieldRef.current?.releaseEmitter(event.pointerId);
+            triggerShimmerArpeggio(x, y, baseFrequency);
             updateTouchPoint({
               id: event.pointerId,
               x,
@@ -509,7 +503,7 @@ export default function App() {
           voice.filter.Q.cancelScheduledValues(now);
           voice.filter.Q.linearRampToValueAtTime(4.2, now + 0.18);
 
-          spawnParticles(x, y, pointerColor, "pad");
+          rainbowFieldRef.current?.setEmitter(event.pointerId, x, y, frequency);
         } else {
           voice.gain.gain.cancelScheduledValues(now);
           voice.gain.gain.linearRampToValueAtTime(level, now + 0.08);
@@ -519,8 +513,7 @@ export default function App() {
             voice.panner.pan.linearRampToValueAtTime(panPosition, now + 0.12);
           }
 
-          const variant: AuroraVariant = distance > 90 ? "shimmer" : "lead";
-          spawnParticles(x, y, pointerColor, variant);
+          rainbowFieldRef.current?.setEmitter(event.pointerId, x, y, frequency);
         }
       }
 
@@ -531,7 +524,7 @@ export default function App() {
         color: pointerColor,
       });
     },
-    [stopVoice, triggerShimmerArpeggio, spawnParticles, updateTouchPoint]
+    [stopVoice, triggerShimmerArpeggio, updateTouchPoint]
   );
 
   const handlePointerUp = useCallback(
@@ -541,6 +534,7 @@ export default function App() {
       activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
+      rainbowFieldRef.current?.releaseEmitter(event.pointerId);
 
       const meta = pointerMetaRef.current.get(event.pointerId);
       pointerMetaRef.current.delete(event.pointerId);
@@ -561,8 +555,7 @@ export default function App() {
 
       if (duration < 220 && meta.totalDistance < 32) {
         const frequency = getFrequencyForPosition(meta.startX, rect.width);
-        const pointerColor = pickColor(event.pointerId);
-        triggerBellChime(x, y, pointerColor, frequency);
+        triggerBellChime(x, y, frequency);
         setStatusMessage("Quick taps unleash crystalline chimes");
       }
 
@@ -579,6 +572,7 @@ export default function App() {
       stopVoice(event.pointerId);
       removeTouchPoint(event.pointerId);
       pointerMetaRef.current.delete(event.pointerId);
+      rainbowFieldRef.current?.releaseEmitter(event.pointerId);
 
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
@@ -631,24 +625,24 @@ export default function App() {
       return;
     }
 
-    const aurora = new AuroraField(canvas);
-    auroraFieldRef.current = aurora;
+    const field = new RainbowField(canvas);
+    rainbowFieldRef.current = field;
 
     const resize = () => {
       const rect = container.getBoundingClientRect();
-      aurora.resize(rect.width, rect.height);
+      field.resize(rect.width, rect.height);
     };
 
     resize();
-    aurora.start();
+    field.start();
 
     const observer = new ResizeObserver(resize);
     observer.observe(container);
 
     return () => {
       observer.disconnect();
-      aurora.destroy();
-      auroraFieldRef.current = null;
+      field.destroy();
+      rainbowFieldRef.current = null;
     };
   }, []);
 
