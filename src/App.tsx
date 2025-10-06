@@ -7,8 +7,8 @@ import React, {
 } from "react";
 import { RainbowField } from "./effects/RainbowField";
 import { clamp } from "./utils/math";
+import { hexToRgb, lighten, mixRgb, rgbToCss, RGBColor } from "./utils/color";
 
-// Allow older Safari builds to expose the prefixed AudioContext constructor.
 declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext;
@@ -19,7 +19,57 @@ interface TouchPoint {
   id: number;
   x: number;
   y: number;
-  color: string;
+  color: RGBColor;
+}
+
+interface TapConfig {
+  waveform: OscillatorType;
+  octaveOffset: number;
+  detune?: number;
+  attack: number;
+  decay: number;
+  sustain: number;
+  release: number;
+  gain: number;
+  filterFrequency: number;
+  filterQ: number;
+}
+
+interface InstrumentDefinition {
+  id: string;
+  waveform: OscillatorType;
+  detune?: number;
+  attack: number;
+  sustain: number;
+  release: number;
+  filter: {
+    type: BiquadFilterType;
+    frequency: number;
+    Q: number;
+    gain?: number;
+  };
+  vibrato?: {
+    rate: number;
+    depth: number;
+  };
+  tap: TapConfig;
+}
+
+interface GridCell {
+  id: number;
+  label: string;
+  hex: string;
+  color: RGBColor;
+  frequency: number;
+  instrument: InstrumentDefinition;
+}
+
+interface CellMix {
+  primaryCell: GridCell;
+  blendedColor: RGBColor;
+  blendedFrequency: number;
+  rowIndex: number;
+  columnIndex: number;
 }
 
 interface Voice {
@@ -27,7 +77,10 @@ interface Voice {
   gain: GainNode;
   filter: BiquadFilterNode;
   panner?: StereoPannerNode;
-  instrument: InstrumentType;
+  vibratoOsc: OscillatorNode;
+  vibratoGain: GainNode;
+  instrument: InstrumentDefinition;
+  currentCellIndex: number;
 }
 
 interface PointerMeta {
@@ -37,44 +90,701 @@ interface PointerMeta {
   lastY: number;
   totalDistance: number;
   startTime: number;
-  instrumentLocked: boolean;
-  triggeredShimmer: boolean;
+  currentCellIndex: number;
+  lastColor: RGBColor;
+  lastFrequency: number;
 }
 
-type InstrumentType = "lead" | "pad";
+const GRID_ROWS = 5;
+const GRID_COLUMNS = 5;
 
-const COLOR_PALETTE = [
-  "#38bdf8",
-  "#f472b6",
-  "#facc15",
-  "#22d3ee",
-  "#a855f7",
-  "#34d399",
-  "#fb7185",
-  "#f97316",
+const ROW_BASES = [554.37, 466.16, 369.99, 293.66, 220.0];
+const COLUMN_RATIOS = [1, 1.1225, 1.26, 1.498, 1.682];
+
+const makeInstrument = (config: InstrumentDefinition): InstrumentDefinition => config;
+
+const GRID_SPEC: Array<
+  Array<{ hex: string; label: string; instrument: InstrumentDefinition }>
+> = [
+  [
+    {
+      hex: "#ff2f92",
+      label: "Nova",
+      instrument: makeInstrument({
+        id: "nova",
+        waveform: "sawtooth",
+        detune: 6,
+        attack: 0.05,
+        sustain: 0.62,
+        release: 0.48,
+        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
+        vibrato: { rate: 5.2, depth: 7 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 1,
+          detune: 14,
+          attack: 0.01,
+          decay: 0.2,
+          sustain: 0.28,
+          release: 0.32,
+          gain: 0.38,
+          filterFrequency: 6200,
+          filterQ: 1.2,
+        },
+      }),
+    },
+    {
+      hex: "#ff6b4a",
+      label: "Flare",
+      instrument: makeInstrument({
+        id: "flare",
+        waveform: "square",
+        detune: -4,
+        attack: 0.03,
+        sustain: 0.55,
+        release: 0.42,
+        filter: { type: "bandpass", frequency: 3400, Q: 9.5 },
+        vibrato: { rate: 7.6, depth: 11 },
+        tap: {
+          waveform: "square",
+          octaveOffset: 0,
+          detune: -12,
+          attack: 0.006,
+          decay: 0.16,
+          sustain: 0.22,
+          release: 0.28,
+          gain: 0.36,
+          filterFrequency: 2600,
+          filterQ: 5,
+        },
+      }),
+    },
+    {
+      hex: "#ffd23f",
+      label: "Solar",
+      instrument: makeInstrument({
+        id: "solar",
+        waveform: "triangle",
+        detune: 8,
+        attack: 0.06,
+        sustain: 0.58,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 7800, Q: 0.7 },
+        vibrato: { rate: 3.8, depth: 5 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.012,
+          decay: 0.22,
+          sustain: 0.32,
+          release: 0.34,
+          gain: 0.32,
+          filterFrequency: 6400,
+          filterQ: 1.4,
+        },
+      }),
+    },
+    {
+      hex: "#7dff5c",
+      label: "Verdant",
+      instrument: makeInstrument({
+        id: "verdant",
+        waveform: "sine",
+        detune: 2,
+        attack: 0.08,
+        sustain: 0.64,
+        release: 0.62,
+        filter: { type: "lowpass", frequency: 6200, Q: 0.8 },
+        vibrato: { rate: 4.4, depth: 6 },
+        tap: {
+          waveform: "sine",
+          octaveOffset: 1,
+          detune: 7,
+          attack: 0.015,
+          decay: 0.24,
+          sustain: 0.35,
+          release: 0.4,
+          gain: 0.28,
+          filterFrequency: 5400,
+          filterQ: 1,
+        },
+      }),
+    },
+    {
+      hex: "#32ffe0",
+      label: "Lagoon",
+      instrument: makeInstrument({
+        id: "lagoon",
+        waveform: "sawtooth",
+        detune: -9,
+        attack: 0.04,
+        sustain: 0.6,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 6800, Q: 0.9 },
+        vibrato: { rate: 6.5, depth: 8 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 1,
+          attack: 0.01,
+          decay: 0.18,
+          sustain: 0.26,
+          release: 0.36,
+          gain: 0.35,
+          filterFrequency: 6000,
+          filterQ: 2,
+        },
+      }),
+    },
+  ],
+  [
+    {
+      hex: "#b967ff",
+      label: "Lumen",
+      instrument: makeInstrument({
+        id: "lumen",
+        waveform: "triangle",
+        detune: 4,
+        attack: 0.07,
+        sustain: 0.56,
+        release: 0.58,
+        filter: { type: "lowpass", frequency: 7400, Q: 0.6 },
+        vibrato: { rate: 3.6, depth: 4.5 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.014,
+          decay: 0.26,
+          sustain: 0.3,
+          release: 0.36,
+          gain: 0.3,
+          filterFrequency: 5800,
+          filterQ: 1.3,
+        },
+      }),
+    },
+    {
+      hex: "#ff5dac",
+      label: "Bloom",
+      instrument: makeInstrument({
+        id: "bloom",
+        waveform: "sawtooth",
+        detune: 10,
+        attack: 0.05,
+        sustain: 0.65,
+        release: 0.54,
+        filter: { type: "lowpass", frequency: 5400, Q: 1.1 },
+        vibrato: { rate: 5.8, depth: 9 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 0,
+          detune: 12,
+          attack: 0.008,
+          decay: 0.18,
+          sustain: 0.24,
+          release: 0.34,
+          gain: 0.38,
+          filterFrequency: 4200,
+          filterQ: 2.2,
+        },
+      }),
+    },
+    {
+      hex: "#ff9f1c",
+      label: "Spark",
+      instrument: makeInstrument({
+        id: "spark",
+        waveform: "square",
+        detune: -6,
+        attack: 0.04,
+        sustain: 0.58,
+        release: 0.46,
+        filter: { type: "bandpass", frequency: 2800, Q: 7.5 },
+        vibrato: { rate: 7.1, depth: 12 },
+        tap: {
+          waveform: "square",
+          octaveOffset: 0,
+          detune: -7,
+          attack: 0.006,
+          decay: 0.16,
+          sustain: 0.2,
+          release: 0.28,
+          gain: 0.34,
+          filterFrequency: 2300,
+          filterQ: 6,
+        },
+      }),
+    },
+    {
+      hex: "#5dffb5",
+      label: "Mist",
+      instrument: makeInstrument({
+        id: "mist",
+        waveform: "sine",
+        detune: 3,
+        attack: 0.09,
+        sustain: 0.68,
+        release: 0.62,
+        filter: { type: "lowpass", frequency: 6000, Q: 0.9 },
+        vibrato: { rate: 4.8, depth: 5.5 },
+        tap: {
+          waveform: "sine",
+          octaveOffset: 1,
+          detune: 5,
+          attack: 0.016,
+          decay: 0.24,
+          sustain: 0.28,
+          release: 0.4,
+          gain: 0.27,
+          filterFrequency: 5200,
+          filterQ: 1.2,
+        },
+      }),
+    },
+    {
+      hex: "#34d2ff",
+      label: "Azure",
+      instrument: makeInstrument({
+        id: "azure",
+        waveform: "triangle",
+        detune: -8,
+        attack: 0.06,
+        sustain: 0.6,
+        release: 0.56,
+        filter: { type: "lowpass", frequency: 7000, Q: 0.7 },
+        vibrato: { rate: 6.1, depth: 6.5 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.012,
+          decay: 0.22,
+          sustain: 0.32,
+          release: 0.34,
+          gain: 0.31,
+          filterFrequency: 5800,
+          filterQ: 1.5,
+        },
+      }),
+    },
+  ],
+  [
+    {
+      hex: "#ff3b30",
+      label: "Crimson",
+      instrument: makeInstrument({
+        id: "crimson",
+        waveform: "sawtooth",
+        detune: 5,
+        attack: 0.05,
+        sustain: 0.64,
+        release: 0.52,
+        filter: { type: "lowpass", frequency: 4200, Q: 1.3 },
+        vibrato: { rate: 5.9, depth: 10 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 0,
+          detune: 9,
+          attack: 0.008,
+          decay: 0.18,
+          sustain: 0.22,
+          release: 0.3,
+          gain: 0.36,
+          filterFrequency: 3800,
+          filterQ: 2.4,
+        },
+      }),
+    },
+    {
+      hex: "#ff6f61",
+      label: "Glow",
+      instrument: makeInstrument({
+        id: "glow",
+        waveform: "triangle",
+        detune: -5,
+        attack: 0.07,
+        sustain: 0.6,
+        release: 0.56,
+        filter: { type: "lowpass", frequency: 5600, Q: 0.9 },
+        vibrato: { rate: 4.9, depth: 6 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.013,
+          decay: 0.24,
+          sustain: 0.28,
+          release: 0.36,
+          gain: 0.3,
+          filterFrequency: 5000,
+          filterQ: 1.4,
+        },
+      }),
+    },
+    {
+      hex: "#ffcf70",
+      label: "Honey",
+      instrument: makeInstrument({
+        id: "honey",
+        waveform: "sine",
+        detune: 1,
+        attack: 0.08,
+        sustain: 0.66,
+        release: 0.64,
+        filter: { type: "lowpass", frequency: 6400, Q: 0.8 },
+        vibrato: { rate: 3.9, depth: 5 },
+        tap: {
+          waveform: "sine",
+          octaveOffset: 1,
+          attack: 0.015,
+          decay: 0.28,
+          sustain: 0.32,
+          release: 0.42,
+          gain: 0.26,
+          filterFrequency: 5200,
+          filterQ: 1.1,
+        },
+      }),
+    },
+    {
+      hex: "#4ad0ff",
+      label: "Stream",
+      instrument: makeInstrument({
+        id: "stream",
+        waveform: "sawtooth",
+        detune: -10,
+        attack: 0.04,
+        sustain: 0.58,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 6400, Q: 0.7 },
+        vibrato: { rate: 6.8, depth: 7 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 1,
+          attack: 0.009,
+          decay: 0.2,
+          sustain: 0.26,
+          release: 0.34,
+          gain: 0.34,
+          filterFrequency: 5200,
+          filterQ: 1.8,
+        },
+      }),
+    },
+    {
+      hex: "#2b6bff",
+      label: "Tide",
+      instrument: makeInstrument({
+        id: "tide",
+        waveform: "triangle",
+        detune: 3,
+        attack: 0.06,
+        sustain: 0.6,
+        release: 0.55,
+        filter: { type: "lowpass", frequency: 6800, Q: 0.6 },
+        vibrato: { rate: 5.6, depth: 6.8 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.012,
+          decay: 0.24,
+          sustain: 0.3,
+          release: 0.36,
+          gain: 0.3,
+          filterFrequency: 5600,
+          filterQ: 1.3,
+        },
+      }),
+    },
+  ],
+  [
+    {
+      hex: "#5a3bff",
+      label: "Pulse",
+      instrument: makeInstrument({
+        id: "pulse",
+        waveform: "square",
+        detune: -3,
+        attack: 0.05,
+        sustain: 0.5,
+        release: 0.44,
+        filter: { type: "bandpass", frequency: 2200, Q: 8.2 },
+        vibrato: { rate: 7.8, depth: 10 },
+        tap: {
+          waveform: "square",
+          octaveOffset: 0,
+          detune: -9,
+          attack: 0.007,
+          decay: 0.16,
+          sustain: 0.18,
+          release: 0.26,
+          gain: 0.32,
+          filterFrequency: 2000,
+          filterQ: 6.2,
+        },
+      }),
+    },
+    {
+      hex: "#8a46ff",
+      label: "Prism",
+      instrument: makeInstrument({
+        id: "prism",
+        waveform: "sawtooth",
+        detune: 12,
+        attack: 0.05,
+        sustain: 0.58,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 4800, Q: 1.2 },
+        vibrato: { rate: 5.4, depth: 8.5 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 1,
+          attack: 0.01,
+          decay: 0.2,
+          sustain: 0.24,
+          release: 0.34,
+          gain: 0.34,
+          filterFrequency: 4600,
+          filterQ: 2,
+        },
+      }),
+    },
+    {
+      hex: "#ff61f7",
+      label: "Fable",
+      instrument: makeInstrument({
+        id: "fable",
+        waveform: "triangle",
+        detune: 6,
+        attack: 0.07,
+        sustain: 0.62,
+        release: 0.58,
+        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
+        vibrato: { rate: 4.3, depth: 6 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.014,
+          decay: 0.24,
+          sustain: 0.28,
+          release: 0.38,
+          gain: 0.3,
+          filterFrequency: 4800,
+          filterQ: 1.4,
+        },
+      }),
+    },
+    {
+      hex: "#ff4b8c",
+      label: "Blaze",
+      instrument: makeInstrument({
+        id: "blaze",
+        waveform: "sawtooth",
+        detune: -8,
+        attack: 0.04,
+        sustain: 0.57,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 5600, Q: 1 },
+        vibrato: { rate: 6.4, depth: 9 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 0,
+          detune: 10,
+          attack: 0.009,
+          decay: 0.18,
+          sustain: 0.22,
+          release: 0.32,
+          gain: 0.35,
+          filterFrequency: 4200,
+          filterQ: 2.1,
+        },
+      }),
+    },
+    {
+      hex: "#ffa24c",
+      label: "Glowr",
+      instrument: makeInstrument({
+        id: "glowr",
+        waveform: "triangle",
+        detune: 2,
+        attack: 0.06,
+        sustain: 0.59,
+        release: 0.52,
+        filter: { type: "lowpass", frequency: 6000, Q: 0.8 },
+        vibrato: { rate: 5.1, depth: 6.2 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.012,
+          decay: 0.22,
+          sustain: 0.3,
+          release: 0.34,
+          gain: 0.31,
+          filterFrequency: 5000,
+          filterQ: 1.5,
+        },
+      }),
+    },
+  ],
+  [
+    {
+      hex: "#1f77ff",
+      label: "Skye",
+      instrument: makeInstrument({
+        id: "skye",
+        waveform: "sine",
+        detune: -2,
+        attack: 0.09,
+        sustain: 0.64,
+        release: 0.62,
+        filter: { type: "lowpass", frequency: 5600, Q: 0.7 },
+        vibrato: { rate: 3.8, depth: 4.2 },
+        tap: {
+          waveform: "sine",
+          octaveOffset: 1,
+          attack: 0.016,
+          decay: 0.28,
+          sustain: 0.32,
+          release: 0.42,
+          gain: 0.26,
+          filterFrequency: 4800,
+          filterQ: 1.1,
+        },
+      }),
+    },
+    {
+      hex: "#15c6ff",
+      label: "Glacier",
+      instrument: makeInstrument({
+        id: "glacier",
+        waveform: "triangle",
+        detune: 5,
+        attack: 0.07,
+        sustain: 0.6,
+        release: 0.56,
+        filter: { type: "lowpass", frequency: 6000, Q: 0.8 },
+        vibrato: { rate: 4.6, depth: 5.4 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.014,
+          decay: 0.26,
+          sustain: 0.3,
+          release: 0.38,
+          gain: 0.29,
+          filterFrequency: 5200,
+          filterQ: 1.3,
+        },
+      }),
+    },
+    {
+      hex: "#2dff88",
+      label: "Grove",
+      instrument: makeInstrument({
+        id: "grove",
+        waveform: "sawtooth",
+        detune: -6,
+        attack: 0.05,
+        sustain: 0.58,
+        release: 0.5,
+        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
+        vibrato: { rate: 6.2, depth: 7.5 },
+        tap: {
+          waveform: "sawtooth",
+          octaveOffset: 0,
+          detune: 11,
+          attack: 0.009,
+          decay: 0.2,
+          sustain: 0.24,
+          release: 0.34,
+          gain: 0.34,
+          filterFrequency: 4400,
+          filterQ: 2,
+        },
+      }),
+    },
+    {
+      hex: "#aaff2c",
+      label: "Lush",
+      instrument: makeInstrument({
+        id: "lush",
+        waveform: "triangle",
+        detune: 4,
+        attack: 0.08,
+        sustain: 0.64,
+        release: 0.58,
+        filter: { type: "lowpass", frequency: 5800, Q: 0.85 },
+        vibrato: { rate: 4.2, depth: 5.8 },
+        tap: {
+          waveform: "triangle",
+          octaveOffset: 1,
+          attack: 0.014,
+          decay: 0.26,
+          sustain: 0.32,
+          release: 0.38,
+          gain: 0.3,
+          filterFrequency: 5200,
+          filterQ: 1.2,
+        },
+      }),
+    },
+    {
+      hex: "#ffd1ff",
+      label: "Glowm",
+      instrument: makeInstrument({
+        id: "glowm",
+        waveform: "sine",
+        detune: -4,
+        attack: 0.1,
+        sustain: 0.66,
+        release: 0.64,
+        filter: { type: "lowpass", frequency: 5400, Q: 0.7 },
+        vibrato: { rate: 3.6, depth: 4.5 },
+        tap: {
+          waveform: "sine",
+          octaveOffset: 1,
+          attack: 0.016,
+          decay: 0.3,
+          sustain: 0.34,
+          release: 0.44,
+          gain: 0.24,
+          filterFrequency: 4600,
+          filterQ: 1,
+        },
+      }),
+    },
+  ],
 ];
 
-// Frequencies for a bright pentatonic scale spanning two octaves (C major).
-const PENTATONIC_FREQUENCIES = [
-  261.63, // C4
-  293.66, // D4
-  329.63, // E4
-  392.0, // G4
-  440.0, // A4
-  523.25, // C5
-  587.33, // D5
-  659.25, // E5
-  783.99, // G5
-  880.0, // A5
-];
+const GRID_CELLS: GridCell[] = (() => {
+  const cells: GridCell[] = [];
+  let id = 0;
+  for (let row = 0; row < GRID_ROWS; row += 1) {
+    for (let col = 0; col < GRID_COLUMNS; col += 1) {
+      const spec = GRID_SPEC[row][col];
+      const frequency = ROW_BASES[row] * COLUMN_RATIOS[col];
+      cells.push({
+        id,
+        label: spec.label,
+        hex: spec.hex,
+        color: hexToRgb(spec.hex),
+        frequency,
+        instrument: spec.instrument,
+      });
+      id += 1;
+    }
+  }
+  return cells;
+})();
 
-const pickColor = (id: number) => COLOR_PALETTE[id % COLOR_PALETTE.length];
+const getCell = (row: number, col: number) =>
+  GRID_CELLS[row * GRID_COLUMNS + col] ?? GRID_CELLS[0];
+
+const pointerGlowColor = (color: RGBColor) => lighten(color, 0.18);
+const emitterColor = (color: RGBColor) => lighten(color, 0.08);
 
 const getPanForPosition = (x: number, width: number) => {
   if (width <= 0) {
     return 0;
   }
-  return clamp((x / width) * 2 - 1, -1, 1);
+  return clamp((x / width) * 2 - 1, -0.85, 0.85);
 };
 
 const createSilentKick = (context: AudioContext) => {
@@ -93,20 +803,63 @@ const createSilentKick = (context: AudioContext) => {
   };
 };
 
-const getFrequencyForPosition = (x: number, width: number) => {
-  if (width <= 0) {
-    return PENTATONIC_FREQUENCIES[0];
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+const computeCellMix = (
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): CellMix => {
+  if (width <= 0 || height <= 0) {
+    const fallback = GRID_CELLS[0];
+    return {
+      primaryCell: fallback,
+      blendedColor: fallback.color,
+      blendedFrequency: fallback.frequency,
+      rowIndex: 0,
+      columnIndex: 0,
+    };
   }
 
-  const position = clamp(x / width, 0, 1) * (PENTATONIC_FREQUENCIES.length - 1);
-  const baseIndex = Math.floor(position);
-  const nextIndex = clamp(baseIndex + 1, 0, PENTATONIC_FREQUENCIES.length - 1);
-  const fraction = position - baseIndex;
+  const normalizedX = clamp(x / width, 0, 0.9999);
+  const normalizedY = clamp(y / height, 0, 0.9999);
 
-  const startFreq = PENTATONIC_FREQUENCIES[baseIndex];
-  const endFreq = PENTATONIC_FREQUENCIES[nextIndex];
+  const columnIndex = Math.min(
+    Math.floor(normalizedX * GRID_COLUMNS),
+    GRID_COLUMNS - 1
+  );
+  const rowIndex = Math.min(
+    Math.floor(normalizedY * GRID_ROWS),
+    GRID_ROWS - 1
+  );
 
-  return startFreq + (endFreq - startFreq) * fraction;
+  const nextColumn = Math.min(columnIndex + 1, GRID_COLUMNS - 1);
+  const nextRow = Math.min(rowIndex + 1, GRID_ROWS - 1);
+
+  const blendX = clamp(normalizedX * GRID_COLUMNS - columnIndex, 0, 1);
+  const blendY = clamp(normalizedY * GRID_ROWS - rowIndex, 0, 1);
+
+  const cell00 = getCell(rowIndex, columnIndex);
+  const cell10 = getCell(rowIndex, nextColumn);
+  const cell01 = getCell(nextRow, columnIndex);
+  const cell11 = getCell(nextRow, nextColumn);
+
+  const topColor = mixRgb(cell00.color, cell10.color, blendX);
+  const bottomColor = mixRgb(cell01.color, cell11.color, blendX);
+  const blendedColor = mixRgb(topColor, bottomColor, blendY);
+
+  const topFrequency = lerp(cell00.frequency, cell10.frequency, blendX);
+  const bottomFrequency = lerp(cell01.frequency, cell11.frequency, blendX);
+  const blendedFrequency = lerp(topFrequency, bottomFrequency, blendY);
+
+  return {
+    primaryCell: cell00,
+    blendedColor,
+    blendedFrequency,
+    rowIndex,
+    columnIndex,
+  };
 };
 
 const getGainForPosition = (y: number, height: number) => {
@@ -115,8 +868,179 @@ const getGainForPosition = (y: number, height: number) => {
   }
 
   const normalized = 1 - clamp(y / height, 0, 1);
-  return clamp(0.18 + normalized * 0.5, 0.12, 0.68);
+  return clamp(0.18 + normalized * 0.5, 0.12, 0.7);
 };
+
+const computeTargetGain = (
+  y: number,
+  height: number,
+  instrument: InstrumentDefinition
+) => clamp(getGainForPosition(y, height) * instrument.sustain, 0.04, 0.9);
+
+const morphVoiceToInstrument = (
+  voice: Voice,
+  instrument: InstrumentDefinition,
+  now: number
+) => {
+  voice.instrument = instrument;
+  voice.oscillator.type = instrument.waveform;
+  voice.filter.type = instrument.filter.type;
+  voice.filter.frequency.setTargetAtTime(instrument.filter.frequency, now, 0.1);
+  voice.filter.Q.setTargetAtTime(instrument.filter.Q, now, 0.1);
+  if (instrument.filter.gain !== undefined) {
+    voice.filter.gain.setTargetAtTime(instrument.filter.gain, now, 0.1);
+  }
+  voice.oscillator.detune.setTargetAtTime(instrument.detune ?? 0, now, 0.1);
+  const vibratoDepth = instrument.vibrato?.depth ?? 0;
+  const vibratoRate = instrument.vibrato?.rate ?? 0.01;
+  voice.vibratoGain.gain.setTargetAtTime(vibratoDepth, now, 0.12);
+  voice.vibratoOsc.frequency.setTargetAtTime(vibratoRate, now, 0.12);
+};
+
+const createVoice = (
+  context: AudioContext,
+  instrument: InstrumentDefinition,
+  frequency: number,
+  pan: number
+): Voice => {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const filter = context.createBiquadFilter();
+  const vibratoOsc = context.createOscillator();
+  const vibratoGain = context.createGain();
+
+  gain.gain.value = 0;
+  vibratoGain.gain.value = instrument.vibrato?.depth ?? 0;
+  vibratoOsc.type = "sine";
+  vibratoOsc.frequency.setValueAtTime(instrument.vibrato?.rate ?? 0.01, context.currentTime);
+
+  oscillator.connect(filter);
+  vibratoOsc.connect(vibratoGain);
+  vibratoGain.connect(oscillator.frequency);
+
+  let panner: StereoPannerNode | undefined;
+  if (context.createStereoPanner) {
+    panner = context.createStereoPanner();
+    filter.connect(panner);
+    panner.connect(gain);
+    panner.pan.setValueAtTime(pan, context.currentTime);
+  } else {
+    filter.connect(gain);
+  }
+
+  gain.connect(context.destination);
+
+  const now = context.currentTime;
+  morphVoiceToInstrument(
+    {
+      oscillator,
+      gain,
+      filter,
+      panner,
+      vibratoOsc,
+      vibratoGain,
+      instrument,
+      currentCellIndex: -1,
+    },
+    instrument,
+    now
+  );
+  oscillator.frequency.setValueAtTime(frequency, now);
+  oscillator.detune.setValueAtTime(instrument.detune ?? 0, now);
+
+  oscillator.start(now);
+  vibratoOsc.start(now);
+
+  return {
+    oscillator,
+    gain,
+    filter,
+    panner,
+    vibratoOsc,
+    vibratoGain,
+    instrument,
+    currentCellIndex: -1,
+  };
+};
+
+const updateVoiceForMix = (
+  voice: Voice,
+  frequency: number,
+  gainValue: number,
+  pan: number,
+  now: number
+) => {
+  voice.oscillator.frequency.cancelScheduledValues(now);
+  voice.oscillator.frequency.linearRampToValueAtTime(
+    frequency,
+    now + 0.08
+  );
+  voice.gain.gain.setTargetAtTime(gainValue, now, 0.08);
+  if (voice.panner) {
+    voice.panner.pan.setTargetAtTime(pan, now, 0.08);
+  }
+};
+
+const playTapSound = (
+  context: AudioContext,
+  cell: GridCell,
+  x: number,
+  y: number,
+  rainbowField?: RainbowField | null
+) => {
+  const now = context.currentTime;
+  const tap = cell.instrument.tap;
+  const oscillator = context.createOscillator();
+  oscillator.type = tap.waveform;
+  const baseFrequency =
+    cell.frequency * Math.pow(2, tap.octaveOffset) + (tap.detune ?? 0);
+  oscillator.frequency.setValueAtTime(baseFrequency, now);
+
+  const gain = context.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+
+  const filter = context.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.setValueAtTime(tap.filterFrequency, now);
+  filter.Q.setValueAtTime(tap.filterQ, now);
+
+  oscillator.connect(filter);
+  filter.connect(gain);
+  gain.connect(context.destination);
+
+  gain.gain.exponentialRampToValueAtTime(tap.gain, now + tap.attack);
+  gain.gain.linearRampToValueAtTime(
+    tap.gain * tap.sustain,
+    now + tap.attack + tap.decay
+  );
+  gain.gain.exponentialRampToValueAtTime(
+    0.0001,
+    now + tap.attack + tap.decay + tap.release
+  );
+
+  const stopTime = now + tap.attack + tap.decay + tap.release + 0.3;
+  oscillator.start(now);
+  oscillator.stop(stopTime);
+  oscillator.onended = () => {
+    try {
+      oscillator.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    } catch (error) {
+      console.warn("Tap oscillator cleanup failed", error);
+    }
+  };
+
+  rainbowField?.pulse(
+    x,
+    y,
+    cell.frequency,
+    lighten(cell.color, 0.25),
+    1100
+  );
+};
+
+const DEFAULT_STATUS = "Tap a tile to spark a tone";
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -130,8 +1054,7 @@ export default function App() {
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
 
   const [touchPoints, setTouchPoints] = useState<Map<number, TouchPoint>>(new Map());
-  const [statusMessage, setStatusMessage] = useState("Touch or click to play");
-  const hasActiveTouches = touchPoints.size > 0;
+  const [statusMessage, setStatusMessage] = useState(DEFAULT_STATUS);
 
   const ensureAudioContext = useCallback(async () => {
     let context = audioContextRef.current;
@@ -155,94 +1078,6 @@ export default function App() {
 
     return context;
   }, []);
-
-  const triggerBellChime = useCallback(
-    (x: number, y: number, baseFrequency: number) => {
-      const context = audioContextRef.current;
-      if (!context) {
-        return;
-      }
-
-      const now = context.currentTime;
-      const osc = context.createOscillator();
-      const gain = context.createGain();
-      const shimmer = context.createGain();
-
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(baseFrequency, now);
-      osc.frequency.exponentialRampToValueAtTime(baseFrequency * 2, now + 0.5);
-
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(0.4, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.9);
-
-      shimmer.gain.setValueAtTime(0.0001, now);
-      shimmer.gain.exponentialRampToValueAtTime(1, now + 0.04);
-      shimmer.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
-
-      osc.connect(shimmer);
-      shimmer.connect(gain);
-      gain.connect(context.destination);
-
-      osc.start(now);
-      osc.stop(now + 1.2);
-      osc.onended = () => {
-        try {
-          osc.disconnect();
-          shimmer.disconnect();
-          gain.disconnect();
-        } catch (error) {
-          console.warn("Chime cleanup failed", error);
-        }
-      };
-
-      rainbowFieldRef.current?.pulse(x, y, baseFrequency, 1100);
-    },
-    []
-  );
-
-  const triggerShimmerArpeggio = useCallback(
-    (x: number, y: number, baseFrequency: number) => {
-      const context = audioContextRef.current;
-      if (!context) {
-        return;
-      }
-
-      const now = context.currentTime;
-      const intervals = [0, 7, 12, 19];
-
-      intervals.forEach((semitones, index) => {
-        const start = now + index * 0.08;
-        const osc = context.createOscillator();
-        const gain = context.createGain();
-
-        osc.type = "sine";
-        const frequency = baseFrequency * Math.pow(2, semitones / 12);
-        osc.frequency.setValueAtTime(frequency, start);
-
-        gain.gain.setValueAtTime(0, start);
-        gain.gain.linearRampToValueAtTime(0.22, start + 0.03);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.6);
-
-        osc.connect(gain);
-        gain.connect(context.destination);
-
-        osc.start(start);
-        osc.stop(start + 0.65);
-        osc.onended = () => {
-          try {
-            osc.disconnect();
-            gain.disconnect();
-          } catch (error) {
-            console.warn("Shimmer cleanup failed", error);
-          }
-        };
-      });
-
-      rainbowFieldRef.current?.pulse(x, y, baseFrequency * 1.5, 1200);
-    },
-    []
-  );
 
   const updateTouchPoint = useCallback((point: TouchPoint | null) => {
     setTouchPoints((prev) => {
@@ -277,12 +1112,14 @@ export default function App() {
       voicesRef.current.delete(id);
 
       const now = context.currentTime;
+      const releaseTime = Math.max(0.12, voice.instrument.release);
       voice.gain.gain.cancelScheduledValues(now);
-      voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
-      voice.gain.gain.linearRampToValueAtTime(0, now + 0.12);
+      voice.gain.gain.setValueAtTime(Math.max(voice.gain.gain.value, 0.0001), now);
+      voice.gain.gain.linearRampToValueAtTime(0.0001, now + releaseTime);
 
       try {
-        voice.oscillator.stop(now + 0.15);
+        voice.oscillator.stop(now + releaseTime + 0.05);
+        voice.vibratoOsc.stop(now + releaseTime + 0.05);
       } catch (error) {
         console.warn("Oscillator stop failed", error);
       }
@@ -290,6 +1127,7 @@ export default function App() {
       const timeoutId = window.setTimeout(() => {
         try {
           voice.oscillator.disconnect();
+          voice.vibratoOsc.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
           voice.gain.disconnect();
@@ -297,7 +1135,7 @@ export default function App() {
           console.warn("Voice disconnect failed", error);
         }
         releaseTimersRef.current.delete(id);
-      }, 250);
+      }, (releaseTime + 0.25) * 1000);
 
       releaseTimersRef.current.set(id, timeoutId);
     },
@@ -317,11 +1155,38 @@ export default function App() {
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
       const pointerId = event.pointerId;
-      const pointerColor = pickColor(pointerId);
 
       activePointersRef.current.add(pointerId);
-
       event.currentTarget.setPointerCapture?.(pointerId);
+
+      const mix = computeCellMix(x, y, rect.width, rect.height);
+
+      pointerMetaRef.current.set(pointerId, {
+        startX: x,
+        startY: y,
+        lastX: x,
+        lastY: y,
+        totalDistance: 0,
+        startTime: performance.now(),
+        currentCellIndex: mix.primaryCell.id,
+        lastColor: mix.blendedColor,
+        lastFrequency: mix.blendedFrequency,
+      });
+
+      updateTouchPoint({
+        id: pointerId,
+        x,
+        y,
+        color: pointerGlowColor(mix.blendedColor),
+      });
+
+      rainbowFieldRef.current?.setEmitter(
+        pointerId,
+        x,
+        y,
+        mix.blendedFrequency,
+        emitterColor(mix.blendedColor)
+      );
 
       let context: AudioContext;
       try {
@@ -330,6 +1195,9 @@ export default function App() {
         console.error("Unable to create audio context", error);
         setStatusMessage("Audio is not supported in this browser");
         activePointersRef.current.delete(pointerId);
+        pointerMetaRef.current.delete(pointerId);
+        removeTouchPoint(pointerId);
+        rainbowFieldRef.current?.releaseEmitter(pointerId);
         return;
       }
 
@@ -343,83 +1211,39 @@ export default function App() {
         return;
       }
 
-      const oscillator = context.createOscillator();
-      oscillator.type = "sine";
-      const filter = context.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(14000, context.currentTime);
-      filter.Q.setValueAtTime(0.001, context.currentTime);
+      const pan = getPanForPosition(x, rect.width);
+      const voice = createVoice(
+        context,
+        mix.primaryCell.instrument,
+        mix.blendedFrequency,
+        pan
+      );
+      voice.currentCellIndex = mix.primaryCell.id;
 
-      const gain = context.createGain();
-      gain.gain.value = 0;
-
-      let panner: StereoPannerNode | undefined;
-      if (context.createStereoPanner) {
-        panner = context.createStereoPanner();
-        oscillator.connect(panner);
-        panner.connect(filter);
-      } else {
-        oscillator.connect(filter);
-      }
-
-      filter.connect(gain);
-      gain.connect(context.destination);
-
-      const frequency = getFrequencyForPosition(x, rect.width);
-      oscillator.frequency.setValueAtTime(frequency, context.currentTime);
-
-      const gainValue = getGainForPosition(y, rect.height);
       const now = context.currentTime;
-
-      oscillator.start(now);
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(gainValue, now + 0.06);
-
-      if (panner) {
-        const panPosition = getPanForPosition(x, rect.width);
-        panner.pan.setValueAtTime(panPosition, now);
-      }
-
-      voicesRef.current.set(pointerId, {
-        oscillator,
-        gain,
-        filter,
-        panner,
-        instrument: "lead",
-      });
-
-      pointerMetaRef.current.set(pointerId, {
-        startX: x,
-        startY: y,
-        lastX: x,
-        lastY: y,
-        totalDistance: 0,
-        startTime: performance.now(),
-        instrumentLocked: false,
-        triggeredShimmer: false,
-      });
-
-      updateTouchPoint({
-        id: pointerId,
-        x,
+      const gainValue = computeTargetGain(
         y,
-        color: pointerColor,
-      });
+        rect.height,
+        mix.primaryCell.instrument
+      );
+      voice.gain.gain.setValueAtTime(0, now);
+      voice.gain.gain.linearRampToValueAtTime(
+        gainValue,
+        now + Math.max(0.04, mix.primaryCell.instrument.attack)
+      );
 
-      rainbowFieldRef.current?.setEmitter(pointerId, x, y, frequency);
+      voicesRef.current.set(pointerId, voice);
 
-      setStatusMessage("Slide around to explore expressive gestures");
+      setStatusMessage("Drag across tiles to blend colour and tone");
     },
-    [ensureAudioContext, updateTouchPoint]
+    [ensureAudioContext, removeTouchPoint, updateTouchPoint]
   );
 
   const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      const voice = voicesRef.current.get(event.pointerId);
       const container = containerRef.current;
-      const context = audioContextRef.current;
       const meta = pointerMetaRef.current.get(event.pointerId);
-      if (!voice || !container || !context || !meta) {
+      if (!container || !meta) {
         return;
       }
 
@@ -429,102 +1253,49 @@ export default function App() {
 
       const dx = x - meta.lastX;
       const dy = y - meta.lastY;
-      const distance = Math.hypot(dx, dy);
       meta.lastX = x;
       meta.lastY = y;
-      meta.totalDistance += distance;
+      meta.totalDistance += Math.hypot(dx, dy);
 
-      const pointerColor = pickColor(event.pointerId);
+      const mix = computeCellMix(x, y, rect.width, rect.height);
 
-      if (!meta.triggeredShimmer) {
-        const totalDx = x - meta.startX;
-        const totalDy = y - meta.startY;
-        const absDx = Math.abs(totalDx);
-        const absDy = Math.abs(totalDy);
-
-        if (!meta.instrumentLocked) {
-          if (
-            absDx > 60 &&
-            absDy > 60 &&
-            Math.abs(absDx - absDy) < 40
-          ) {
-            meta.triggeredShimmer = true;
-            pointerMetaRef.current.set(event.pointerId, meta);
-
-            const baseFrequency = getFrequencyForPosition(x, rect.width);
-            stopVoice(event.pointerId);
-            rainbowFieldRef.current?.releaseEmitter(event.pointerId);
-            triggerShimmerArpeggio(x, y, baseFrequency);
-            updateTouchPoint({
-              id: event.pointerId,
-              x,
-              y,
-              color: pointerColor,
-            });
-            setStatusMessage("Diagonal flares trigger sparkling arpeggios");
-            return;
-          }
-
-          if (absDy > absDx * 1.35 && absDy > 50 && voice.instrument !== "pad") {
-            const now = context.currentTime;
-            voice.instrument = "pad";
-            voice.oscillator.type = "triangle";
-            voice.filter.frequency.cancelScheduledValues(now);
-            voice.filter.frequency.setValueAtTime(1200, now);
-            voice.filter.Q.setValueAtTime(3.2, now);
-            meta.instrumentLocked = true;
-            setStatusMessage("Vertical drifts unlock the mellow pad");
-          } else if (absDx > 40) {
-            meta.instrumentLocked = true;
-          }
-        }
-
-        const frequency = getFrequencyForPosition(x, rect.width);
-        const level = getGainForPosition(y, rect.height);
-        const now = context.currentTime;
-
-        voice.oscillator.frequency.cancelScheduledValues(now);
-        voice.oscillator.frequency.linearRampToValueAtTime(
-          frequency,
-          now + (voice.instrument === "pad" ? 0.12 : 0.05)
-        );
-
-        if (voice.instrument === "pad") {
-          const padLevel = clamp(level * 1.35, 0.12, 0.78);
-          voice.gain.gain.cancelScheduledValues(now);
-          voice.gain.gain.linearRampToValueAtTime(padLevel, now + 0.18);
-          const cutoff = clamp(
-            420 + (1 - clamp(y / rect.height, 0, 1)) * 2000,
-            360,
-            2600
-          );
-          voice.filter.frequency.cancelScheduledValues(now);
-          voice.filter.frequency.linearRampToValueAtTime(cutoff, now + 0.18);
-          voice.filter.Q.cancelScheduledValues(now);
-          voice.filter.Q.linearRampToValueAtTime(4.2, now + 0.18);
-
-          rainbowFieldRef.current?.setEmitter(event.pointerId, x, y, frequency);
-        } else {
-          voice.gain.gain.cancelScheduledValues(now);
-          voice.gain.gain.linearRampToValueAtTime(level, now + 0.08);
-          if (voice.panner) {
-            const panPosition = getPanForPosition(x, rect.width);
-            voice.panner.pan.cancelScheduledValues(now);
-            voice.panner.pan.linearRampToValueAtTime(panPosition, now + 0.12);
-          }
-
-          rainbowFieldRef.current?.setEmitter(event.pointerId, x, y, frequency);
-        }
-      }
+      meta.currentCellIndex = mix.primaryCell.id;
+      meta.lastColor = mix.blendedColor;
+      meta.lastFrequency = mix.blendedFrequency;
 
       updateTouchPoint({
         id: event.pointerId,
         x,
         y,
-        color: pointerColor,
+        color: pointerGlowColor(mix.blendedColor),
       });
+
+      rainbowFieldRef.current?.setEmitter(
+        event.pointerId,
+        x,
+        y,
+        mix.blendedFrequency,
+        emitterColor(mix.blendedColor)
+      );
+
+      const voice = voicesRef.current.get(event.pointerId);
+      const context = audioContextRef.current;
+      if (!voice || !context) {
+        return;
+      }
+
+      const now = context.currentTime;
+
+      if (voice.currentCellIndex !== mix.primaryCell.id) {
+        morphVoiceToInstrument(voice, mix.primaryCell.instrument, now);
+        voice.currentCellIndex = mix.primaryCell.id;
+      }
+
+      const gainValue = computeTargetGain(y, rect.height, voice.instrument);
+      const pan = getPanForPosition(x, rect.width);
+      updateVoiceForMix(voice, mix.blendedFrequency, gainValue, pan, now);
     },
-    [stopVoice, triggerShimmerArpeggio, updateTouchPoint]
+    [updateTouchPoint]
   );
 
   const handlePointerUp = useCallback(
@@ -541,7 +1312,7 @@ export default function App() {
 
       const container = containerRef.current;
       const context = audioContextRef.current;
-      if (!container || !context || !meta || meta.triggeredShimmer) {
+      if (!container || !context || !meta) {
         if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
@@ -554,16 +1325,22 @@ export default function App() {
       const duration = performance.now() - meta.startTime;
 
       if (duration < 220 && meta.totalDistance < 32) {
-        const frequency = getFrequencyForPosition(meta.startX, rect.width);
-        triggerBellChime(x, y, frequency);
-        setStatusMessage("Quick taps unleash crystalline chimes");
+        const cell = GRID_CELLS.find((c) => c.id === meta.currentCellIndex) ?? GRID_CELLS[0];
+        playTapSound(
+          context,
+          cell,
+          x,
+          y,
+          rainbowFieldRef.current
+        );
+        setStatusMessage("Quick taps trigger each tile's mini instrument");
       }
 
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     },
-    [removeTouchPoint, stopVoice, triggerBellChime]
+    [removeTouchPoint, stopVoice]
   );
 
   const handlePointerCancel = useCallback(
@@ -586,7 +1363,9 @@ export default function App() {
       voicesRef.current.forEach((voice, id) => {
         try {
           voice.oscillator.stop();
+          voice.vibratoOsc.stop();
           voice.oscillator.disconnect();
+          voice.vibratoOsc.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
           voice.gain.disconnect();
@@ -614,7 +1393,7 @@ export default function App() {
 
   useEffect(() => {
     if (touchPoints.size === 0) {
-      setStatusMessage("Touch or click to play");
+      setStatusMessage(DEFAULT_STATUS);
     }
   }, [touchPoints]);
 
@@ -648,11 +1427,6 @@ export default function App() {
 
   return (
     <div
-      ref={containerRef}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerCancel}
       style={{
         position: "fixed",
         inset: 0,
@@ -660,91 +1434,154 @@ export default function App() {
         alignItems: "center",
         justifyContent: "center",
         background:
-          "radial-gradient(circle at 20% 25%, rgba(34,197,94,0.28), transparent 55%)," +
-          "radial-gradient(circle at 80% 20%, rgba(59,130,246,0.24), transparent 50%)," +
-          "linear-gradient(140deg, #020617 0%, #0f172a 45%, #1e1b4b 100%)",
-        color: "#f8fafc",
-        fontFamily: "'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+          "radial-gradient(circle at 12% 18%, rgba(255,105,180,0.3), transparent 55%)," +
+          "radial-gradient(circle at 80% 22%, rgba(79,172,254,0.28), transparent 52%)," +
+          "linear-gradient(140deg, #020617 0%, #0b1226 45%, #111b3a 100%)",
+        color: "#0f172a",
+        fontFamily:
+          "'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         userSelect: "none",
         WebkitUserSelect: "none",
         touchAction: "none",
         overflow: "hidden",
+        padding: "4vh 2vw",
       }}
     >
-      <canvas
-        ref={canvasRef}
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          pointerEvents: "none",
-          filter: "blur(0.3px)",
-        }}
-      />
-
       <div
         style={{
-          position: "absolute",
-          top: 20,
-          left: 20,
-          padding: "10px 16px",
-          borderRadius: 16,
-          backgroundColor: "rgba(15, 23, 42, 0.55)",
-          color: "rgba(226, 232, 240, 0.95)",
-          fontSize: 14,
-          letterSpacing: 0.2,
-          backdropFilter: "blur(6px)",
+          position: "relative",
+          width: "min(92vw, 860px)",
+          aspectRatio: `${GRID_COLUMNS} / ${GRID_ROWS}`,
+          maxHeight: "92vh",
         }}
       >
-        {statusMessage}
-      </div>
-
-      {!hasActiveTouches && (
         <div
-          style={{
-            textAlign: "center",
-            maxWidth: 460,
-            padding: "36px 28px",
-            borderRadius: 36,
-            backgroundColor: "rgba(15, 23, 42, 0.55)",
-            boxShadow: "0 40px 120px rgba(8, 47, 73, 0.45)",
-            backdropFilter: "blur(12px)",
-          }}
-        >
-          <div style={{ fontSize: 56, marginBottom: 12 }}>🎶</div>
-          <h1 style={{ fontSize: 28, margin: "0 0 12px", letterSpacing: 0.6 }}>
-            PlayPatch
-          </h1>
-          <p style={{ fontSize: 18, margin: "0 0 6px", opacity: 0.9 }}>
-            Slide, drift, and flick to paint sound with light.
-          </p>
-          <p style={{ fontSize: 14, margin: 0, opacity: 0.75 }}>
-            Horizontal glides play the lead, vertical sweeps bloom a pad, and
-            quick taps sparkle with crystalline chimes.
-          </p>
-        </div>
-      )}
-
-      {touchPointArray.map((point) => (
-        <div
-          key={point.id}
+          ref={containerRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
           style={{
             position: "absolute",
-            width: 120,
-            height: 120,
-            borderRadius: "50%",
-            pointerEvents: "none",
-            left: point.x - 60,
-            top: point.y - 60,
-            background: `radial-gradient(circle, ${point.color} 0%, rgba(15, 23, 42, 0) 70%)`,
-            boxShadow: `0 0 60px 30px ${point.color}40`,
-            opacity: 0.85,
-            transition: "transform 0.12s ease, opacity 0.12s ease",
-            transform: "scale(1)",
+            inset: 0,
+            borderRadius: 8,
+            overflow: "hidden",
+            boxShadow: "0 45px 120px rgba(15, 23, 42, 0.6)",
+            backgroundColor: "rgba(8, 12, 26, 0.72)",
+            backdropFilter: "blur(22px)",
+            touchAction: "none",
           }}
-        />
-      ))}
+        >
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              pointerEvents: "none",
+              filter: "blur(0.6px)",
+            }}
+          />
+
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "grid",
+              gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`,
+              gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
+              gap: 18,
+              padding: 28,
+              pointerEvents: "none",
+            }}
+          >
+            {GRID_CELLS.map((cell) => (
+              <div
+                key={cell.id}
+                style={{
+                  position: "relative",
+                  borderRadius: 8,
+                  overflow: "hidden",
+                  background: `linear-gradient(135deg, ${rgbToCss(
+                    lighten(cell.color, 0.12)
+                  )}, ${rgbToCss(lighten(cell.color, 0.32))})`,
+                  boxShadow: `0 18px 45px ${rgbToCss(
+                    lighten(cell.color, 0.5),
+                    0.32
+                  )}`,
+                  transform: "translateZ(0)",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background:
+                      "linear-gradient(160deg, rgba(255,255,255,0.15), transparent 60%)",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 18,
+                    bottom: 18,
+                    fontSize: 15,
+                    fontWeight: 600,
+                    letterSpacing: 0.3,
+                    color: "rgba(255,255,255,0.92)",
+                    textShadow: "0 4px 14px rgba(15, 23, 42, 0.45)",
+                  }}
+                >
+                  {cell.label}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div
+            style={{
+              position: "absolute",
+              top: 20,
+              left: 24,
+              padding: "10px 18px",
+              borderRadius: 8,
+              backgroundColor: "rgba(15, 23, 42, 0.65)",
+              color: "rgba(240, 249, 255, 0.92)",
+              fontSize: 14,
+              letterSpacing: 0.3,
+              backdropFilter: "blur(12px)",
+              pointerEvents: "none",
+            }}
+          >
+            {statusMessage}
+          </div>
+
+          {touchPointArray.map((point) => (
+            <div
+              key={point.id}
+              style={{
+                position: "absolute",
+                width: 150,
+                height: 150,
+                borderRadius: "50%",
+                pointerEvents: "none",
+                left: point.x - 75,
+                top: point.y - 75,
+                background: `radial-gradient(circle, ${rgbToCss(
+                  lighten(point.color, 0.28),
+                  0.92
+                )} 0%, ${rgbToCss(point.color, 0)} 70%)`,
+                boxShadow: `0 0 80px 35px ${rgbToCss(point.color, 0.45)}`,
+                mixBlendMode: "screen",
+                transition: "transform 0.12s ease, opacity 0.12s ease",
+                transform: "scale(1)",
+                opacity: 0.95,
+              }}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

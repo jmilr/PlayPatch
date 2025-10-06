@@ -1,14 +1,5 @@
 import { clamp } from "../utils/math";
-
-const RAINBOW_COLORS = [
-  "#ff0048",
-  "#ff8a00",
-  "#ffd500",
-  "#3aff00",
-  "#00b5ff",
-  "#0051ff",
-  "#7a00ff",
-];
+import { RGBColor, mixRgb } from "../utils/color";
 
 interface RainbowEmitter {
   id: number;
@@ -20,6 +11,11 @@ interface RainbowEmitter {
   active: boolean;
   releaseAt?: number;
   zIndex: number;
+  color: RGBColor;
+  targetColor: RGBColor;
+  startColor: RGBColor;
+  colorTransitionStart: number;
+  colorTransitionDuration: number;
 }
 
 interface RainbowPulse {
@@ -28,6 +24,7 @@ interface RainbowPulse {
   frequency: number;
   createdAt: number;
   ttl: number;
+  color: RGBColor;
 }
 
 export class RainbowField {
@@ -74,7 +71,14 @@ export class RainbowField {
     this.ctx.scale(dpr, dpr);
   }
 
-  setEmitter(id: number, x: number, y: number, frequency: number) {
+  setEmitter(
+    id: number,
+    x: number,
+    y: number,
+    frequency: number,
+    color: RGBColor,
+    transitionDuration = 320
+  ) {
     const now = performance.now();
     const existing = this.emitters.get(id);
     if (existing) {
@@ -86,6 +90,16 @@ export class RainbowField {
         existing.active = true;
         existing.releaseAt = undefined;
         existing.createdAt = now;
+      }
+      const needsTransition =
+        Math.abs(existing.targetColor.r - color.r) > 0.1 ||
+        Math.abs(existing.targetColor.g - color.g) > 0.1 ||
+        Math.abs(existing.targetColor.b - color.b) > 0.1;
+      if (needsTransition) {
+        existing.startColor = existing.color;
+        existing.targetColor = color;
+        existing.colorTransitionStart = now;
+        existing.colorTransitionDuration = transitionDuration;
       }
       this.emitters.set(id, existing);
       return;
@@ -100,6 +114,11 @@ export class RainbowField {
       lastUpdate: now,
       active: true,
       zIndex: ++this.zCounter,
+      color,
+      startColor: color,
+      targetColor: color,
+      colorTransitionStart: now,
+      colorTransitionDuration: transitionDuration,
     });
   }
 
@@ -117,7 +136,13 @@ export class RainbowField {
     this.emitters.delete(id);
   }
 
-  pulse(x: number, y: number, frequency: number, duration = 900) {
+  pulse(
+    x: number,
+    y: number,
+    frequency: number,
+    color: RGBColor,
+    duration = 900
+  ) {
     const now = performance.now();
     this.pulses.push({
       x,
@@ -125,6 +150,7 @@ export class RainbowField {
       frequency,
       createdAt: now,
       ttl: duration,
+      color,
     });
   }
 
@@ -174,6 +200,22 @@ export class RainbowField {
     );
 
     for (const emitter of emitters) {
+      if (emitter.targetColor && emitter.colorTransitionDuration > 0) {
+        const elapsed = now - emitter.colorTransitionStart;
+        const progress = clamp(
+          emitter.colorTransitionDuration === 0
+            ? 1
+            : elapsed / emitter.colorTransitionDuration,
+          0,
+          1
+        );
+        const mixed = mixRgb(emitter.startColor, emitter.targetColor, progress);
+        emitter.color = mixed;
+        if (progress >= 1) {
+          emitter.startColor = mixed;
+        }
+      }
+
       const intensity = emitter.active
         ? 0.85
         : 0.85 * clamp(1 - ((now - (emitter.releaseAt ?? now)) / this.releaseDuration), 0, 1);
@@ -188,7 +230,8 @@ export class RainbowField {
         emitter.y,
         emitter.frequency,
         now - emitter.createdAt,
-        intensity
+        intensity,
+        emitter.color
       );
     }
 
@@ -199,7 +242,14 @@ export class RainbowField {
         continue;
       }
       const intensity = 0.9 * (1 - age / pulse.ttl);
-      this.renderRipple(pulse.x, pulse.y, pulse.frequency, age, intensity);
+      this.renderRipple(
+        pulse.x,
+        pulse.y,
+        pulse.frequency,
+        age,
+        intensity,
+        pulse.color
+      );
       remainingPulses.push(pulse);
     }
     this.pulses = remainingPulses;
@@ -210,7 +260,8 @@ export class RainbowField {
     y: number,
     frequency: number,
     ageMs: number,
-    intensity: number
+    intensity: number,
+    color: RGBColor
   ) {
     const ctx = this.ctx;
     if (!ctx || intensity <= 0) {
@@ -221,15 +272,14 @@ export class RainbowField {
     const speed = this.frequencyToSpeed(frequency);
     const offset = ageSeconds * speed;
     const band = this.bandWidth;
-    const colorCount = RAINBOW_COLORS.length;
     const maxRadius = this.maxRadius;
 
     if (maxRadius <= 0) {
       return;
     }
 
-    const minIndex = Math.floor(-offset / band) - colorCount;
-    const maxIndex = Math.ceil((maxRadius - offset) / band) + colorCount;
+    const minIndex = Math.floor(-offset / band) - 4;
+    const maxIndex = Math.ceil((maxRadius - offset) / band) + 4;
 
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
@@ -245,17 +295,21 @@ export class RainbowField {
         break;
       }
 
+      if (i % 2 !== 0) {
+        continue;
+      }
+
       const clippedInner = Math.max(0, innerRadius);
       const clippedOuter = Math.min(maxRadius, Math.max(0, outerRadius));
 
       if (clippedOuter <= clippedInner) {
         continue;
       }
-
-      const colorIndex = ((i % colorCount) + colorCount) % colorCount;
       ctx.beginPath();
-      ctx.fillStyle = RAINBOW_COLORS[colorIndex];
-      ctx.globalAlpha = intensity;
+      ctx.fillStyle = `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(
+        color.b
+      )}, ${clamp(intensity, 0, 1)})`;
+      ctx.globalAlpha = 1;
       ctx.moveTo(x, y);
       ctx.arc(x, y, clippedOuter, 0, Math.PI * 2);
       if (clippedInner > 0) {
