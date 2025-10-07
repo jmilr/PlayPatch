@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import { RainbowField } from "./effects/RainbowField";
 import { clamp } from "./utils/math";
 import { hexToRgb, mixRgb, rgbToCss, RGBColor } from "./utils/color";
@@ -13,13 +7,6 @@ declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext;
   }
-}
-
-interface TouchPoint {
-  id: number;
-  x: number;
-  y: number;
-  color: RGBColor;
 }
 
 interface TapConfig {
@@ -829,7 +816,6 @@ const GRID_CELLS: GridCell[] = (() => {
 const getCell = (row: number, col: number) =>
   GRID_CELLS[row * GRID_COLUMNS + col] ?? GRID_CELLS[0];
 
-const pointerGlowColor = (color: RGBColor) => color;
 const emitterColor = (color: RGBColor) => color;
 
 const getPanForPosition = (x: number, width: number) => {
@@ -1103,8 +1089,6 @@ export default function App() {
   const activePointersRef = useRef<Set<number>>(new Set());
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
 
-  const [touchPoints, setTouchPoints] = useState<Map<number, TouchPoint>>(new Map());
-
   const ensureAudioContext = useCallback(async () => {
     let context = audioContextRef.current;
     if (!context) {
@@ -1126,28 +1110,6 @@ export default function App() {
     }
 
     return context;
-  }, []);
-
-  const updateTouchPoint = useCallback((point: TouchPoint | null) => {
-    setTouchPoints((prev) => {
-      const next = new Map(prev);
-      if (!point) {
-        return next;
-      }
-      next.set(point.id, point);
-      return next;
-    });
-  }, []);
-
-  const removeTouchPoint = useCallback((id: number) => {
-    setTouchPoints((prev) => {
-      if (!prev.has(id)) {
-        return prev;
-      }
-      const next = new Map(prev);
-      next.delete(id);
-      return next;
-    });
   }, []);
 
   const stopVoice = useCallback(
@@ -1222,13 +1184,6 @@ export default function App() {
         lastFrequency: mix.blendedFrequency,
       });
 
-      updateTouchPoint({
-        id: pointerId,
-        x,
-        y,
-        color: pointerGlowColor(mix.blendedColor),
-      });
-
       rainbowFieldRef.current?.setEmitter(
         pointerId,
         x,
@@ -1244,7 +1199,6 @@ export default function App() {
         console.error("Unable to create audio context", error);
         activePointersRef.current.delete(pointerId);
         pointerMetaRef.current.delete(pointerId);
-        removeTouchPoint(pointerId);
         rainbowFieldRef.current?.releaseEmitter(pointerId);
         return;
       }
@@ -1283,7 +1237,7 @@ export default function App() {
       voicesRef.current.set(pointerId, voice);
 
     },
-    [ensureAudioContext, removeTouchPoint, updateTouchPoint]
+    [ensureAudioContext]
   );
 
   const handlePointerMove = useCallback(
@@ -1312,13 +1266,6 @@ export default function App() {
       meta.lastTileColor = mix.primaryCell.color;
       meta.lastFrequency = mix.blendedFrequency;
 
-      updateTouchPoint({
-        id: event.pointerId,
-        x,
-        y,
-        color: pointerGlowColor(mix.blendedColor),
-      });
-
       rainbowFieldRef.current?.setEmitter(
         event.pointerId,
         x,
@@ -1344,7 +1291,7 @@ export default function App() {
       const pan = getPanForPosition(x, rect.width);
       updateVoiceForMix(voice, mix.blendedFrequency, gainValue, pan, now);
     },
-    [updateTouchPoint]
+    []
   );
 
   const handlePointerUp = useCallback(
@@ -1353,7 +1300,6 @@ export default function App() {
 
       activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
-      removeTouchPoint(event.pointerId);
       rainbowFieldRef.current?.releaseEmitter(event.pointerId);
 
       const meta = pointerMetaRef.current.get(event.pointerId);
@@ -1388,14 +1334,13 @@ export default function App() {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     },
-    [removeTouchPoint, stopVoice]
+    [stopVoice]
   );
 
   const handlePointerCancel = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       activePointersRef.current.delete(event.pointerId);
       stopVoice(event.pointerId);
-      removeTouchPoint(event.pointerId);
       pointerMetaRef.current.delete(event.pointerId);
       rainbowFieldRef.current?.releaseEmitter(event.pointerId);
 
@@ -1403,7 +1348,7 @@ export default function App() {
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     },
-    [removeTouchPoint, stopVoice]
+    [stopVoice]
   );
 
   useEffect(() => {
@@ -1433,11 +1378,6 @@ export default function App() {
       });
     };
   }, []);
-
-  const touchPointArray = useMemo(
-    () => Array.from(touchPoints.values()),
-    [touchPoints]
-  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1547,23 +1487,6 @@ export default function App() {
             ))}
           </div>
 
-          {touchPointArray.map((point) => (
-            <div
-              key={point.id}
-              style={{
-                position: "absolute",
-                width: 72,
-                height: 72,
-                borderRadius: 4,
-                pointerEvents: "none",
-                left: point.x - 36,
-                top: point.y - 36,
-                backgroundColor: rgbToCss(point.color),
-                opacity: 0.9,
-                zIndex: 3,
-              }}
-            />
-          ))}
         </div>
       </div>
     </div>
