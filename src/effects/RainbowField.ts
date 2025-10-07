@@ -1,6 +1,26 @@
 import { clamp } from "../utils/math";
 import { RGBColor, mixRgb } from "../utils/color";
 
+const clampChannel = (value: number) => Math.max(0, Math.min(255, value));
+
+const accentuateBandColor = (color: RGBColor): RGBColor => {
+  const saturationBoost = 1.18;
+  const darknessFactor = 0.86;
+  const average = (color.r + color.g + color.b) / 3;
+
+  const saturated = {
+    r: clampChannel(average + (color.r - average) * saturationBoost),
+    g: clampChannel(average + (color.g - average) * saturationBoost),
+    b: clampChannel(average + (color.b - average) * saturationBoost),
+  };
+
+  return {
+    r: clampChannel(saturated.r * darknessFactor),
+    g: clampChannel(saturated.g * darknessFactor),
+    b: clampChannel(saturated.b * darknessFactor),
+  };
+};
+
 interface RainbowEmitter {
   id: number;
   x: number;
@@ -39,7 +59,7 @@ export class RainbowField {
   private zCounter = 0;
   private readonly bandWidth = 26;
   private maxRadius = 0;
-  private readonly releaseDuration = 680;
+  private readonly releaseDuration = 200;
 
   constructor(private canvas: HTMLCanvasElement) {
     const context = canvas.getContext("2d", {
@@ -141,7 +161,7 @@ export class RainbowField {
     y: number,
     frequency: number,
     color: RGBColor,
-    duration = 900
+    duration = 200
   ) {
     const now = performance.now();
     this.pulses.push({
@@ -284,6 +304,7 @@ export class RainbowField {
     ctx.save();
     ctx.globalCompositeOperation = "source-over";
 
+    let bandIndex = 0;
     for (let i = minIndex; i <= maxIndex; i += 1) {
       const innerRadius = i * band + offset;
       const outerRadius = innerRadius + band;
@@ -305,18 +326,20 @@ export class RainbowField {
       if (clippedOuter <= clippedInner) {
         continue;
       }
+      const bandColor =
+        bandIndex % 2 === 1 ? accentuateBandColor(color) : color;
+      const alpha = clamp(intensity, 0, 1);
       ctx.beginPath();
-      ctx.fillStyle = `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(
-        color.b
-      )}, ${clamp(intensity, 0, 1)})`;
-      ctx.globalAlpha = 1;
-      ctx.moveTo(x, y);
+      ctx.fillStyle = `rgba(${Math.round(bandColor.r)}, ${Math.round(
+        bandColor.g
+      )}, ${Math.round(bandColor.b)}, ${alpha})`;
       ctx.arc(x, y, clippedOuter, 0, Math.PI * 2);
       if (clippedInner > 0) {
         ctx.arc(x, y, clippedInner, 0, Math.PI * 2, true);
       }
       ctx.closePath();
-      ctx.fill();
+      ctx.fill("evenodd");
+      bandIndex += 1;
     }
 
     ctx.restore();

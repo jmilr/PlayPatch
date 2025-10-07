@@ -1088,7 +1088,7 @@ const playTapSound = (
     y,
     cell.frequency,
     cell.color,
-    1100
+    200
   );
 };
 
@@ -1288,6 +1288,8 @@ export default function App() {
 
   const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+
       const container = containerRef.current;
       const meta = pointerMetaRef.current.get(event.pointerId);
       if (!container || !meta) {
