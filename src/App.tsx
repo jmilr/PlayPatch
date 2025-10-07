@@ -7,7 +7,7 @@ import React, {
 } from "react";
 import { RainbowField } from "./effects/RainbowField";
 import { clamp } from "./utils/math";
-import { hexToRgb, lighten, mixRgb, rgbToCss, RGBColor } from "./utils/color";
+import { hexToRgb, mixRgb, rgbToCss, RGBColor } from "./utils/color";
 
 declare global {
   interface Window {
@@ -753,6 +753,55 @@ const GRID_SPEC: Array<
   ],
 ];
 
+const PERCUSSIVE_PATTERN: boolean[][] = [
+  [true, false, true, false, true],
+  [false, true, false, true, false],
+  [true, false, true, false, true],
+  [false, true, false, true, false],
+  [true, false, true, false, true],
+];
+
+const createPercussiveInstrument = (
+  baseId: string,
+  baseFrequency: number,
+  variant: number
+): InstrumentDefinition => {
+  const waveforms: OscillatorType[] = [
+    "square",
+    "sawtooth",
+    "triangle",
+    "square",
+    "sine",
+  ];
+  const waveform = waveforms[variant % waveforms.length];
+  const detune = (variant % 5) * 2 - 4;
+  const filterFrequency = clamp(baseFrequency * 1.7 + variant * 35, 350, 5200);
+  const filterQ = 5 + (variant % 4) * 1.1;
+  const tapFilter = clamp(filterFrequency * 1.1, 500, 5600);
+
+  return makeInstrument({
+    id: `percussive-${baseId}`,
+    waveform,
+    detune,
+    attack: 0.008,
+    sustain: 0.18,
+    release: 0.16,
+    filter: { type: "bandpass", frequency: filterFrequency, Q: filterQ },
+    tap: {
+      waveform,
+      octaveOffset: 0,
+      detune: detune * 1.5,
+      attack: 0.003,
+      decay: 0.12,
+      sustain: 0.1,
+      release: 0.14,
+      gain: 0.38 + (variant % 3) * 0.03,
+      filterFrequency: tapFilter,
+      filterQ: filterQ + 1.5,
+    },
+  });
+};
+
 const GRID_CELLS: GridCell[] = (() => {
   const cells: GridCell[] = [];
   let id = 0;
@@ -760,13 +809,16 @@ const GRID_CELLS: GridCell[] = (() => {
     for (let col = 0; col < GRID_COLUMNS; col += 1) {
       const spec = GRID_SPEC[row][col];
       const frequency = ROW_BASES[row] * COLUMN_RATIOS[col];
+      const instrument = PERCUSSIVE_PATTERN[row][col]
+        ? createPercussiveInstrument(`${spec.instrument.id}-${id}`, frequency, id)
+        : spec.instrument;
       cells.push({
         id,
         label: spec.label,
         hex: spec.hex,
         color: hexToRgb(spec.hex),
         frequency,
-        instrument: spec.instrument,
+        instrument,
       });
       id += 1;
     }
@@ -777,8 +829,8 @@ const GRID_CELLS: GridCell[] = (() => {
 const getCell = (row: number, col: number) =>
   GRID_CELLS[row * GRID_COLUMNS + col] ?? GRID_CELLS[0];
 
-const pointerGlowColor = (color: RGBColor) => lighten(color, 0.18);
-const emitterColor = (color: RGBColor) => lighten(color, 0.08);
+const pointerGlowColor = (color: RGBColor) => color;
+const emitterColor = (color: RGBColor) => color;
 
 const getPanForPosition = (x: number, width: number) => {
   if (width <= 0) {
@@ -1035,12 +1087,10 @@ const playTapSound = (
     x,
     y,
     cell.frequency,
-    lighten(cell.color, 0.25),
+    cell.color,
     1100
   );
 };
-
-const DEFAULT_STATUS = "Tap a tile to spark a tone";
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1054,7 +1104,6 @@ export default function App() {
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
 
   const [touchPoints, setTouchPoints] = useState<Map<number, TouchPoint>>(new Map());
-  const [statusMessage, setStatusMessage] = useState(DEFAULT_STATUS);
 
   const ensureAudioContext = useCallback(async () => {
     let context = audioContextRef.current;
@@ -1193,7 +1242,6 @@ export default function App() {
         context = await ensureAudioContext();
       } catch (error) {
         console.error("Unable to create audio context", error);
-        setStatusMessage("Audio is not supported in this browser");
         activePointersRef.current.delete(pointerId);
         pointerMetaRef.current.delete(pointerId);
         removeTouchPoint(pointerId);
@@ -1234,7 +1282,6 @@ export default function App() {
 
       voicesRef.current.set(pointerId, voice);
 
-      setStatusMessage("Drag across tiles to blend colour and tone");
     },
     [ensureAudioContext, removeTouchPoint, updateTouchPoint]
   );
@@ -1333,7 +1380,6 @@ export default function App() {
           y,
           rainbowFieldRef.current
         );
-        setStatusMessage("Quick taps trigger each tile's mini instrument");
       }
 
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -1392,12 +1438,6 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (touchPoints.size === 0) {
-      setStatusMessage(DEFAULT_STATUS);
-    }
-  }, [touchPoints]);
-
-  useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
     if (!canvas || !container) {
@@ -1431,29 +1471,19 @@ export default function App() {
         position: "fixed",
         inset: 0,
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background:
-          "radial-gradient(circle at 12% 18%, rgba(255,105,180,0.3), transparent 55%)," +
-          "radial-gradient(circle at 80% 22%, rgba(79,172,254,0.28), transparent 52%)," +
-          "linear-gradient(140deg, #020617 0%, #0b1226 45%, #111b3a 100%)",
-        color: "#0f172a",
+        backgroundColor: "#06070c",
         fontFamily:
           "'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
         userSelect: "none",
         WebkitUserSelect: "none",
         touchAction: "none",
-        overflow: "hidden",
-        padding: "4vh 2vw",
       }}
     >
       <div
         style={{
           position: "relative",
-          width: "min(92vw, 860px)",
-          aspectRatio: `${GRID_COLUMNS} / ${GRID_ROWS}`,
-          maxHeight: "92vh",
-        }}
+          flex: 1,
+      }}
       >
         <div
           ref={containerRef}
@@ -1464,11 +1494,9 @@ export default function App() {
           style={{
             position: "absolute",
             inset: 0,
-            borderRadius: 8,
+            borderRadius: 4,
             overflow: "hidden",
-            boxShadow: "0 45px 120px rgba(15, 23, 42, 0.6)",
-            backgroundColor: "rgba(8, 12, 26, 0.72)",
-            backdropFilter: "blur(22px)",
+            backgroundColor: "#06070c",
             touchAction: "none",
           }}
         >
@@ -1480,7 +1508,6 @@ export default function App() {
               width: "100%",
               height: "100%",
               pointerEvents: "none",
-              filter: "blur(0.6px)",
             }}
           />
 
@@ -1491,8 +1518,8 @@ export default function App() {
               display: "grid",
               gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`,
               gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
-              gap: 18,
-              padding: 28,
+              gap: 4,
+              padding: 4,
               pointerEvents: "none",
             }}
           >
@@ -1500,61 +1527,12 @@ export default function App() {
               <div
                 key={cell.id}
                 style={{
-                  position: "relative",
-                  borderRadius: 8,
-                  overflow: "hidden",
-                  background: `linear-gradient(135deg, ${rgbToCss(
-                    lighten(cell.color, 0.12)
-                  )}, ${rgbToCss(lighten(cell.color, 0.32))})`,
-                  boxShadow: `0 18px 45px ${rgbToCss(
-                    lighten(cell.color, 0.5),
-                    0.32
-                  )}`,
-                  transform: "translateZ(0)",
+                  borderRadius: 4,
+                  backgroundColor: rgbToCss(cell.color),
                 }}
               >
-                <div
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    background:
-                      "linear-gradient(160deg, rgba(255,255,255,0.15), transparent 60%)",
-                  }}
-                />
-                <div
-                  style={{
-                    position: "absolute",
-                    left: 18,
-                    bottom: 18,
-                    fontSize: 15,
-                    fontWeight: 600,
-                    letterSpacing: 0.3,
-                    color: "rgba(255,255,255,0.92)",
-                    textShadow: "0 4px 14px rgba(15, 23, 42, 0.45)",
-                  }}
-                >
-                  {cell.label}
-                </div>
               </div>
             ))}
-          </div>
-
-          <div
-            style={{
-              position: "absolute",
-              top: 20,
-              left: 24,
-              padding: "10px 18px",
-              borderRadius: 8,
-              backgroundColor: "rgba(15, 23, 42, 0.65)",
-              color: "rgba(240, 249, 255, 0.92)",
-              fontSize: 14,
-              letterSpacing: 0.3,
-              backdropFilter: "blur(12px)",
-              pointerEvents: "none",
-            }}
-          >
-            {statusMessage}
           </div>
 
           {touchPointArray.map((point) => (
@@ -1562,21 +1540,14 @@ export default function App() {
               key={point.id}
               style={{
                 position: "absolute",
-                width: 150,
-                height: 150,
-                borderRadius: "50%",
+                width: 72,
+                height: 72,
+                borderRadius: 4,
                 pointerEvents: "none",
-                left: point.x - 75,
-                top: point.y - 75,
-                background: `radial-gradient(circle, ${rgbToCss(
-                  lighten(point.color, 0.28),
-                  0.92
-                )} 0%, ${rgbToCss(point.color, 0)} 70%)`,
-                boxShadow: `0 0 80px 35px ${rgbToCss(point.color, 0.45)}`,
-                mixBlendMode: "screen",
-                transition: "transform 0.12s ease, opacity 0.12s ease",
-                transform: "scale(1)",
-                opacity: 0.95,
+                left: point.x - 36,
+                top: point.y - 36,
+                backgroundColor: rgbToCss(point.color),
+                opacity: 0.9,
               }}
             />
           ))}
