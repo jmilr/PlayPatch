@@ -282,7 +282,7 @@ export class RainbowField {
     const maxIndex = Math.ceil((maxRadius - offset) / band) + 4;
 
     ctx.save();
-    ctx.globalCompositeOperation = "lighter";
+    ctx.globalCompositeOperation = "source-over";
 
     for (let i = minIndex; i <= maxIndex; i += 1) {
       const innerRadius = i * band + offset;

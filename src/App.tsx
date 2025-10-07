@@ -91,7 +91,7 @@ interface PointerMeta {
   totalDistance: number;
   startTime: number;
   currentCellIndex: number;
-  lastColor: RGBColor;
+  lastTileColor: RGBColor;
   lastFrequency: number;
 }
 
@@ -1218,7 +1218,7 @@ export default function App() {
         totalDistance: 0,
         startTime: performance.now(),
         currentCellIndex: mix.primaryCell.id,
-        lastColor: mix.blendedColor,
+        lastTileColor: mix.primaryCell.color,
         lastFrequency: mix.blendedFrequency,
       });
 
@@ -1234,7 +1234,7 @@ export default function App() {
         x,
         y,
         mix.blendedFrequency,
-        emitterColor(mix.blendedColor)
+        emitterColor(mix.primaryCell.color)
       );
 
       let context: AudioContext;
@@ -1307,7 +1307,7 @@ export default function App() {
       const mix = computeCellMix(x, y, rect.width, rect.height);
 
       meta.currentCellIndex = mix.primaryCell.id;
-      meta.lastColor = mix.blendedColor;
+      meta.lastTileColor = mix.primaryCell.color;
       meta.lastFrequency = mix.blendedFrequency;
 
       updateTouchPoint({
@@ -1322,7 +1322,7 @@ export default function App() {
         x,
         y,
         mix.blendedFrequency,
-        emitterColor(mix.blendedColor)
+        emitterColor(mix.primaryCell.color)
       );
 
       const voice = voicesRef.current.get(event.pointerId);
@@ -1508,6 +1508,7 @@ export default function App() {
               width: "100%",
               height: "100%",
               pointerEvents: "none",
+              zIndex: 2,
             }}
           />
 
@@ -1518,19 +1519,28 @@ export default function App() {
               display: "grid",
               gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`,
               gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
-              gap: 4,
+              gap: 0,
               padding: 4,
+              boxSizing: "border-box",
               pointerEvents: "none",
+              zIndex: 1,
             }}
           >
             {GRID_CELLS.map((cell) => (
               <div
                 key={cell.id}
                 style={{
-                  borderRadius: 4,
-                  backgroundColor: rgbToCss(cell.color),
+                  padding: 2,
                 }}
               >
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: 4,
+                    backgroundColor: rgbToCss(cell.color),
+                  }}
+                />
               </div>
             ))}
           </div>
@@ -1548,6 +1558,7 @@ export default function App() {
                 top: point.y - 36,
                 backgroundColor: rgbToCss(point.color),
                 opacity: 0.9,
+                zIndex: 3,
               }}
             />
           ))}
