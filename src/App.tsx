@@ -3,6 +3,7 @@ import { RainbowField } from "./effects/RainbowField";
 import { clamp } from "./utils/math";
 import { hexToRgb, mixRgb, rgbToCss, RGBColor } from "./utils/color";
 import { SlideMenu, SlideMenuPage } from "./components/SlideMenu";
+import { PatchSequencer } from "./components/PatchSequencer";
 
 declare global {
   interface Window {
@@ -1508,43 +1509,10 @@ export default function App() {
         </div>
 
         {activePage === "patch" && (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: "#06070c",
-              color: "#f8fafc",
-              gap: 16,
-              textAlign: "center",
-              padding: "calc(env(safe-area-inset-top, 0px) + 48px) 24px 24px",
-              zIndex: 5,
-            }}
-          >
-            <h1
-              style={{
-                margin: 0,
-                fontSize: "clamp(32px, 6vw, 48px)",
-                letterSpacing: 4,
-                textTransform: "uppercase",
-              }}
-            >
-              Patch
-            </h1>
-            <p
-              style={{
-                margin: 0,
-                maxWidth: 420,
-                color: "rgba(226, 232, 240, 0.65)",
-                fontSize: 18,
-              }}
-            >
-              A space for future experiments.
-            </p>
-          </div>
+          <PatchSequencer
+            ensureAudioContext={ensureAudioContext}
+            audioContextRef={audioContextRef}
+          />
         )}
       </div>
       <SlideMenu currentPage={activePage} onNavigate={setActivePage} />
