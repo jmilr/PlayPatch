@@ -569,7 +569,7 @@ export function PatchSequencer({
         {grid.map((row, rowIndex) =>
           row.map((cell, columnIndex) => {
             const instrument = cell ? instrumentMap.get(cell) : null;
-            const background = instrument ? instrument.color : "#1f2937";
+            const backgroundColor = instrument ? instrument.color : "#1f2937";
 
             return (
               <div key={`${rowIndex}-${columnIndex}`} style={{ padding: 2 }}>
@@ -588,7 +588,7 @@ export function PatchSequencer({
                     height: "100%",
                     borderRadius: 4,
                     border: "none",
-                    background,
+                    backgroundColor,
                     cursor: "pointer",
                     touchAction: "manipulation",
                     padding: 0,
