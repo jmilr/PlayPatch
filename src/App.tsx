@@ -1482,7 +1482,7 @@ export default function App() {
               gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`,
               gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
               gap: 0,
-              padding: 4,
+              padding: "calc(env(safe-area-inset-top, 0px) + 4px) 4px calc(env(safe-area-inset-bottom, 0px) + 4px)",
               boxSizing: "border-box",
               pointerEvents: "none",
               zIndex: 1,

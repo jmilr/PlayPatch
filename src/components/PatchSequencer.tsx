@@ -506,42 +506,36 @@ export function PatchSequencer({
       style={{
         position: "absolute",
         inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 24,
         color: "#e2e8f0",
         backgroundColor: "rgba(6, 7, 12, 0.92)",
-        padding: "calc(env(safe-area-inset-top, 0px) + 64px) 24px 32px",
-        boxSizing: "border-box",
         overflow: "hidden",
         zIndex: 6,
       }}
     >
       <button
-        onClick={handleTogglePlayback}
+        type="button"
         aria-label={playButtonLabel}
+        onClick={handleTogglePlayback}
         style={{
-          position: "fixed",
-          top: "calc(env(safe-area-inset-top, 0px) + 8px)",
-          left: "calc(50% + 72px)",
-          transform: "translateX(-50%)",
-          width: 44,
-          height: 44,
-          borderRadius: 9999,
-          border: "1px solid rgba(148, 163, 184, 0.45)",
-          background: "rgba(15, 23, 42, 0.85)",
-          color: "#f8fafc",
-          fontSize: 16,
-          fontWeight: 600,
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 0px) + 16px)",
+          left: 16,
+          width: 72,
+          height: 72,
+          borderRadius: "50%",
+          border: "none",
+          background: "linear-gradient(135deg, #22c55e, #16a34a)",
+          color: "#0f172a",
+          fontSize: 28,
+          fontWeight: 700,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          boxShadow: "0 10px 28px rgba(15, 23, 42, 0.45)",
+          boxShadow: "0 12px 32px rgba(15, 23, 42, 0.55)",
           cursor: "pointer",
           zIndex: 60,
           transition: "background 0.2s ease, transform 0.2s ease",
+          touchAction: "manipulation",
         }}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -558,34 +552,32 @@ export function PatchSequencer({
 
       <div
         style={{
-          position: "relative",
-          width: "min(88vw, 420px)",
-          aspectRatio: "1",
+          position: "absolute",
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: 0,
           display: "grid",
           gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
           gridTemplateColumns: `repeat(${GRID_COLUMNS}, 1fr)`,
-          padding: 4,
-          background: "rgba(15, 23, 42, 0.75)",
-          borderRadius: 12,
-          border: "1px solid rgba(148, 163, 184, 0.2)",
-          boxShadow: "0 24px 80px rgba(15, 23, 42, 0.65)",
-          overflow: "hidden",
+          gap: 0,
+          padding: "calc(env(safe-area-inset-top, 0px) + 4px) 4px calc(env(safe-area-inset-bottom, 0px) + 4px)",
+          boxSizing: "border-box",
         }}
       >
         <div style={lineStyle} aria-hidden />
         {grid.map((row, rowIndex) =>
           row.map((cell, columnIndex) => {
             const instrument = cell ? instrumentMap.get(cell) : null;
-            const isActiveRow = isPlaying && rowIndex === playhead.row;
-            const background = instrument ? instrument.color : "#1f2937";
-            const outline = isActiveRow
-              ? "0 0 0 3px rgba(34, 197, 94, 0.9)"
-              : "0 0 0 1px rgba(15, 23, 42, 0.6)";
+            const backgroundColor = instrument ? instrument.color : "#1f2937";
 
             return (
               <div key={`${rowIndex}-${columnIndex}`} style={{ padding: 2 }}>
                 <button
                   type="button"
+                  aria-label={
+                    instrument ? `${instrument.label} patch` : "Empty patch slot"
+                  }
                   onPointerDown={() => handlePressStart(rowIndex, columnIndex)}
                   onPointerUp={() => handlePressEnd(rowIndex, columnIndex, true)}
                   onPointerCancel={() => handlePressEnd(rowIndex, columnIndex, false)}
@@ -594,69 +586,18 @@ export function PatchSequencer({
                   style={{
                     width: "100%",
                     height: "100%",
-                    borderRadius: 8,
+                    borderRadius: 4,
                     border: "none",
-                    background,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexDirection: "column",
-                    gap: 4,
-                    color: instrument ? "#0f172a" : "#94a3b8",
-                    fontSize: instrument ? 28 : 18,
-                    boxShadow: outline,
-                    transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease",
+                    backgroundColor,
                     cursor: "pointer",
                     touchAction: "manipulation",
-                    position: "relative",
+                    padding: 0,
                   }}
-                >
-                  {instrument ? (
-                    <>
-                      <span style={{ fontSize: 30 }}>{instrument.emoji}</span>
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          letterSpacing: 1.2,
-                          textTransform: "uppercase",
-                          color: "rgba(15, 23, 42, 0.85)",
-                        }}
-                      >
-                        {instrument.label}
-                      </span>
-                    </>
-                  ) : (
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        letterSpacing: 1,
-                        textTransform: "uppercase",
-                        color: "rgba(148, 163, 184, 0.65)",
-                      }}
-                    >
-                      Tap
-                    </span>
-                  )}
-                </button>
+                />
               </div>
             );
           })
         )}
-      </div>
-      <div
-        style={{
-          textAlign: "center",
-          maxWidth: 420,
-          color: "rgba(226, 232, 240, 0.72)",
-          fontSize: 14,
-          lineHeight: 1.6,
-          letterSpacing: 0.4,
-        }}
-      >
-        Tap tiles to cycle instruments. Hold for two seconds to clear. Instruments play in order from
-        top to bottom when the sequencer runs.
       </div>
     </div>
   );
