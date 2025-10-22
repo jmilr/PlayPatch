@@ -37,7 +37,7 @@ const INSTRUMENTS: SequencerInstrument[] = [
     id: "kick",
     label: "Kick",
     emoji: "🥔",
-    color: "#f97316",
+    color: "#b45309",
     play: (context, when) => {
       const oscillator = context.createOscillator();
       oscillator.type = "sine";
@@ -181,8 +181,8 @@ const INSTRUMENTS: SequencerInstrument[] = [
   {
     id: "bass",
     label: "Bass",
-    emoji: "🥒",
-    color: "#22c55e",
+    emoji: "🥕",
+    color: "#fb923c",
     play: (context, when) => {
       const oscillator = context.createOscillator();
       oscillator.type = "square";
@@ -214,7 +214,7 @@ const INSTRUMENTS: SequencerInstrument[] = [
     id: "piano",
     label: "Piano",
     emoji: "🍏",
-    color: "#34d399",
+    color: "#4ade80",
     play: (context, when) => {
       const createPartial = (ratio: number, gainAmount: number) => {
         const osc = context.createOscillator();
@@ -485,7 +485,8 @@ export function PatchSequencer({
   const playButtonIcon = isPlaying ? "❚❚" : "▶";
 
   const lineStyle = useMemo<React.CSSProperties>(() => {
-    const translatePercent = ((playhead.row + playhead.progress) / GRID_ROWS) * 100;
+    const rowHeightPercent = 100 / GRID_ROWS;
+    const translatePercent = (playhead.row + playhead.progress) * rowHeightPercent;
     return {
       position: "absolute",
       left: 4,
@@ -493,11 +494,12 @@ export function PatchSequencer({
       height: 3,
       borderRadius: 9999,
       background: "rgba(34, 197, 94, 0.9)",
-      transform: `translateY(calc(${translatePercent}% - 1.5px))`,
-      transition: isPlaying ? "none" : "transform 0.3s ease",
+      top: `calc(${translatePercent}% - 1.5px)`,
+      transition: isPlaying ? "top 0.05s linear" : "top 0.3s ease",
       opacity: isPlaying ? 1 : 0,
       pointerEvents: "none",
       boxShadow: "0 0 12px rgba(34, 197, 94, 0.55)",
+      willChange: "top",
     };
   }, [isPlaying, playhead.progress, playhead.row]);
 
@@ -570,6 +572,7 @@ export function PatchSequencer({
           row.map((cell, columnIndex) => {
             const instrument = cell ? instrumentMap.get(cell) : null;
             const backgroundColor = instrument ? instrument.color : "#1f2937";
+            const isActiveRow = playhead.row === rowIndex && isPlaying;
 
             return (
               <div key={`${rowIndex}-${columnIndex}`} style={{ padding: 2 }}>
@@ -587,13 +590,51 @@ export function PatchSequencer({
                     width: "100%",
                     height: "100%",
                     borderRadius: 4,
-                    border: "none",
+                    border: isActiveRow
+                      ? "3px solid rgba(248, 250, 252, 0.75)"
+                      : "3px solid transparent",
+                    boxSizing: "border-box",
                     backgroundColor,
                     cursor: "pointer",
                     touchAction: "manipulation",
                     padding: 0,
+                    position: "relative",
+                    transition: "border 0.12s ease",
                   }}
-                />
+                >
+                  {instrument ? (
+                    <span
+                      aria-hidden
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 28,
+                        lineHeight: 1,
+                        width: "100%",
+                        height: "100%",
+                        filter: isActiveRow ? "brightness(1.05)" : "none",
+                        transition: "filter 0.12s ease",
+                      }}
+                    >
+                      {instrument.emoji}
+                    </span>
+                  ) : (
+                    <span
+                      aria-hidden
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 20,
+                        lineHeight: 1,
+                        color: "#94a3b8",
+                      }}
+                    >
+                      ·
+                    </span>
+                  )}
+                </button>
               </div>
             );
           })
