@@ -63,6 +63,8 @@ interface CellMix {
 
 interface Voice {
   oscillator: OscillatorNode;
+  oscillator2: OscillatorNode;   // detuned harmonic partial for organic texture
+  osc2Level: GainNode;           // level control for oscillator2
   gain: GainNode;
   filter: BiquadFilterNode;
   panner?: StereoPannerNode;
@@ -71,6 +73,7 @@ interface Voice {
   instrument: InstrumentDefinition;
   currentCellIndex: number;
   reverbSend: GainNode;
+  baseGain: number;              // target gain as the sole voice (before energy-balancing)
 }
 
 interface PointerMeta {
@@ -556,6 +559,28 @@ const createSilentKick = (context: AudioContext) => {
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
+// Consonant intervals used to constrain voices relative to the tonal root:
+// unison, major third (5/4), perfect fifth (3/2) – across any number of octaves.
+const SNAP_RATIOS = [1, 5 / 4, 3 / 2];
+
+const snapToRoot = (rawFreq: number, root: number): number => {
+  if (root <= 0 || !isFinite(root)) return rawFreq;
+  let best = rawFreq;
+  let bestDist = Infinity;
+  for (let oct = -3; oct <= 4; oct++) {
+    const base = root * Math.pow(2, oct);
+    for (const r of SNAP_RATIOS) {
+      const cand = base * r;
+      const dist = Math.abs(Math.log2(rawFreq / cand));
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = cand;
+      }
+    }
+  }
+  return best;
+};
+
 const computeCellMix = (
   x: number,
   y: number,
@@ -635,6 +660,7 @@ const morphVoiceToInstrument = (
 ) => {
   voice.instrument = instrument;
   voice.oscillator.type = instrument.waveform;
+  voice.oscillator2.type = instrument.waveform;
   voice.filter.type = instrument.filter.type;
   voice.filter.frequency.setTargetAtTime(instrument.filter.frequency, now, 0.1);
   voice.filter.Q.setTargetAtTime(instrument.filter.Q, now, 0.1);
@@ -642,6 +668,7 @@ const morphVoiceToInstrument = (
     voice.filter.gain.setTargetAtTime(instrument.filter.gain, now, 0.1);
   }
   voice.oscillator.detune.setTargetAtTime(instrument.detune ?? 0, now, 0.1);
+  voice.oscillator2.detune.setTargetAtTime((instrument.detune ?? 0) + 7, now, 0.1);
   const vibratoDepth = instrument.vibrato?.depth ?? 0;
   const vibratoRate = instrument.vibrato?.rate ?? 0.01;
   voice.vibratoGain.gain.setTargetAtTime(vibratoDepth, now, 0.12);
@@ -654,7 +681,8 @@ const createVoice = (
   frequency: number,
   pan: number,
   outputNode: AudioNode,
-  reverbNode: ConvolverNode | null
+  reverbNode: ConvolverNode | null,
+  filterModNode?: GainNode | null
 ): Voice => {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
@@ -664,12 +692,22 @@ const createVoice = (
   const reverbSend = context.createGain();
   reverbSend.gain.value = 0.5;
 
+  // Detuned second partial for organic warmth/beating
+  const oscillator2 = context.createOscillator();
+  const osc2Level = context.createGain();
+  osc2Level.gain.value = 0.4;
+
   gain.gain.value = 0;
   vibratoGain.gain.value = instrument.vibrato?.depth ?? 0;
   vibratoOsc.type = "sine";
   vibratoOsc.frequency.setValueAtTime(instrument.vibrato?.rate ?? 0.01, context.currentTime);
 
+  // Primary oscillator: osc → filter → panner → gain
   oscillator.connect(filter);
+  // Second oscillator: osc2 → osc2Level → filter (mixed before filter)
+  oscillator2.connect(osc2Level);
+  osc2Level.connect(filter);
+
   vibratoOsc.connect(vibratoGain);
   vibratoGain.connect(oscillator.frequency);
 
@@ -689,30 +727,16 @@ const createVoice = (
     reverbSend.connect(reverbNode);
   }
 
+  // Connect shared filter-LFO modulator so all voices evolve together
+  if (filterModNode) {
+    filterModNode.connect(filter.frequency);
+  }
+
   const now = context.currentTime;
-  morphVoiceToInstrument(
-    {
-      oscillator,
-      gain,
-      filter,
-      panner,
-      vibratoOsc,
-      vibratoGain,
-      instrument,
-      currentCellIndex: -1,
-      reverbSend,
-    },
-    instrument,
-    now
-  );
-  oscillator.frequency.setValueAtTime(frequency, now);
-  oscillator.detune.setValueAtTime(instrument.detune ?? 0, now);
-
-  oscillator.start(now);
-  vibratoOsc.start(now);
-
-  return {
+  const voiceForMorph: Voice = {
     oscillator,
+    oscillator2,
+    osc2Level,
     gain,
     filter,
     panner,
@@ -721,6 +745,31 @@ const createVoice = (
     instrument,
     currentCellIndex: -1,
     reverbSend,
+    baseGain: 0,
+  };
+  morphVoiceToInstrument(voiceForMorph, instrument, now);
+  oscillator.frequency.setValueAtTime(frequency, now);
+  oscillator.detune.setValueAtTime(instrument.detune ?? 0, now);
+  oscillator2.frequency.setValueAtTime(frequency, now);
+  oscillator2.detune.setValueAtTime((instrument.detune ?? 0) + 7, now);
+
+  oscillator.start(now);
+  oscillator2.start(now);
+  vibratoOsc.start(now);
+
+  return {
+    oscillator,
+    oscillator2,
+    osc2Level,
+    gain,
+    filter,
+    panner,
+    vibratoOsc,
+    vibratoGain,
+    instrument,
+    currentCellIndex: -1,
+    reverbSend,
+    baseGain: 0,
   };
 };
 
@@ -732,10 +781,9 @@ const updateVoiceForMix = (
   now: number
 ) => {
   voice.oscillator.frequency.cancelScheduledValues(now);
-  voice.oscillator.frequency.linearRampToValueAtTime(
-    frequency,
-    now + 0.08
-  );
+  voice.oscillator.frequency.linearRampToValueAtTime(frequency, now + 0.08);
+  voice.oscillator2.frequency.cancelScheduledValues(now);
+  voice.oscillator2.frequency.linearRampToValueAtTime(frequency, now + 0.08);
   voice.gain.gain.setTargetAtTime(gainValue, now, 0.08);
   if (voice.panner) {
     voice.panner.pan.setTargetAtTime(pan, now, 0.08);
@@ -823,6 +871,13 @@ export default function App() {
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
   const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const reverbRef = useRef<ConvolverNode | null>(null);
+  // Voice-order list (oldest → newest) for age-weighted gain balancing
+  const voiceOrderRef = useRef<number[]>([]);
+  // Current tonal root frequency – all active voices are snapped relative to this
+  const tonalRootRef = useRef<number>(220);
+  // Shared filter LFO: slow sweep across all voices for global evolution
+  const filterLfoRef = useRef<OscillatorNode | null>(null);
+  const filterLfoGainRef = useRef<GainNode | null>(null);
   const [activePage, setActivePage] = useState<SlideMenuPage>("play");
 
   const ensureAudioContext = useCallback(async () => {
@@ -853,6 +908,28 @@ export default function App() {
       reverb.connect(reverbOutput);
       reverbOutput.connect(compressor);
       reverbRef.current = reverb;
+
+      // Global filter LFO – slow sweep (~15 s cycle) shared across all voices.
+      // Each voice's filter.frequency receives this as an additive modulator.
+      const filterLfo = context.createOscillator();
+      filterLfo.type = "sine";
+      filterLfo.frequency.value = 0.065;
+      const filterLfoGain = context.createGain();
+      filterLfoGain.gain.value = 160; // ±160 Hz sweep depth
+      filterLfo.connect(filterLfoGain);
+      filterLfo.start();
+      filterLfoRef.current = filterLfo;
+      filterLfoGainRef.current = filterLfoGain;
+
+      // Reverb level LFO – gently breathes the spatial depth (~25 s cycle).
+      const reverbLfo = context.createOscillator();
+      reverbLfo.type = "sine";
+      reverbLfo.frequency.value = 0.04;
+      const reverbLfoGain = context.createGain();
+      reverbLfoGain.gain.value = 0.1; // ±0.1 around the 0.35 base
+      reverbLfo.connect(reverbLfoGain);
+      reverbLfoGain.connect(reverbOutput.gain);
+      reverbLfo.start();
     }
 
     if (context.state === "suspended") {
@@ -867,6 +944,63 @@ export default function App() {
     return context;
   }, []);
 
+  // Redistribute gain across all active voices so total energy stays constant
+  // (scale = 1/√N). Newest voices are weighted slightly higher than older ones.
+  const rebalanceGains = useCallback(() => {
+    const voices = voicesRef.current;
+    const context = audioContextRef.current;
+    if (!context || voices.size === 0) return;
+
+    const now = context.currentTime;
+    const order = voiceOrderRef.current;
+    const n = order.length;
+    const scale = 1 / Math.sqrt(Math.max(1, voices.size));
+
+    order.forEach((id, idx) => {
+      const voice = voices.get(id);
+      if (!voice) return;
+      // Age factor: oldest = 0.72, newest = 1.0 (linear interpolation)
+      const ageFactor = n <= 1 ? 1.0 : 0.72 + 0.28 * (idx / (n - 1));
+      const target = voice.baseGain * scale * ageFactor;
+      voice.gain.gain.cancelScheduledValues(now);
+      voice.gain.gain.setValueAtTime(Math.max(voice.gain.gain.value, 0.0001), now);
+      voice.gain.gain.setTargetAtTime(target, now, 0.3);
+    });
+  }, []);
+
+  // Derive tonal root (= lowest active voice frequency) and glide-snap all
+  // voices toward their nearest consonant interval above that root.
+  const updateTonalRoot = useCallback(() => {
+    const voices = voicesRef.current;
+    const context = audioContextRef.current;
+    if (!context || voices.size === 0) return;
+
+    let lowestFreq = Infinity;
+    pointerMetaRef.current.forEach((meta, pointerId) => {
+      if (voices.has(pointerId)) {
+        lowestFreq = Math.min(lowestFreq, meta.lastFrequency);
+      }
+    });
+    if (!isFinite(lowestFreq)) return;
+
+    const prevRoot = tonalRootRef.current;
+    tonalRootRef.current = lowestFreq;
+
+    // Skip re-snapping if the root barely changed (< 2 %)
+    if (Math.abs((lowestFreq - prevRoot) / prevRoot) < 0.02) return;
+
+    const now = context.currentTime;
+    voices.forEach((voice, pointerId) => {
+      const meta = pointerMetaRef.current.get(pointerId);
+      if (!meta) return;
+      const snapped = snapToRoot(meta.lastFrequency, lowestFreq);
+      voice.oscillator.frequency.cancelScheduledValues(now);
+      voice.oscillator.frequency.setTargetAtTime(snapped, now, 0.5);
+      voice.oscillator2.frequency.cancelScheduledValues(now);
+      voice.oscillator2.frequency.setTargetAtTime(snapped, now, 0.5);
+    });
+  }, []);
+
   const stopVoice = useCallback(
     (id: number) => {
       const context = audioContextRef.current;
@@ -876,6 +1010,7 @@ export default function App() {
       }
 
       voicesRef.current.delete(id);
+      voiceOrderRef.current = voiceOrderRef.current.filter((oid) => oid !== id);
 
       const now = context.currentTime;
       const releaseTime = Math.max(0.12, voice.instrument.release);
@@ -885,6 +1020,7 @@ export default function App() {
 
       try {
         voice.oscillator.stop(now + releaseTime + 0.05);
+        voice.oscillator2.stop(now + releaseTime + 0.05);
         voice.vibratoOsc.stop(now + releaseTime + 0.05);
       } catch (error) {
         console.warn("Oscillator stop failed", error);
@@ -892,7 +1028,10 @@ export default function App() {
 
       const timeoutId = window.setTimeout(() => {
         try {
+          filterLfoGainRef.current?.disconnect(voice.filter.frequency);
           voice.oscillator.disconnect();
+          voice.oscillator2.disconnect();
+          voice.osc2Level.disconnect();
           voice.vibratoOsc.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
@@ -905,8 +1044,12 @@ export default function App() {
       }, (releaseTime + 0.25) * 1000);
 
       releaseTimersRef.current.set(id, timeoutId);
+
+      // Re-balance remaining voices after this one departs
+      updateTonalRoot();
+      rebalanceGains();
     },
-    []
+    [rebalanceGains, updateTonalRoot]
   );
 
   const handlePointerDown = useCallback(
@@ -970,13 +1113,27 @@ export default function App() {
       }
 
       const pan = getPanForPosition(x, rect.width);
+
+      // Derive tonal root from already-active voices (or use default 220 Hz)
+      let currentRoot = tonalRootRef.current;
+      voicesRef.current.forEach((_v, pid) => {
+        const m = pointerMetaRef.current.get(pid);
+        if (m) currentRoot = Math.min(currentRoot, m.lastFrequency);
+      });
+      // Include this new touch in root calculation
+      currentRoot = Math.min(currentRoot, mix.blendedFrequency);
+      tonalRootRef.current = currentRoot;
+
+      const snappedFreq = snapToRoot(mix.blendedFrequency, currentRoot);
+
       const voice = createVoice(
         context,
         mix.primaryCell.instrument,
-        mix.blendedFrequency,
+        snappedFreq,
         pan,
         compressorRef.current ?? context.destination,
-        reverbRef.current
+        reverbRef.current,
+        filterLfoGainRef.current
       );
       voice.currentCellIndex = mix.primaryCell.id;
 
@@ -986,16 +1143,19 @@ export default function App() {
         rect.height,
         mix.primaryCell.instrument
       );
+      voice.baseGain = gainValue;
+      // Start silent; rebalanceGains will drive the attack via setTargetAtTime
       voice.gain.gain.setValueAtTime(0, now);
-      voice.gain.gain.linearRampToValueAtTime(
-        gainValue,
-        now + Math.max(0.04, mix.primaryCell.instrument.attack)
-      );
 
       voicesRef.current.set(pointerId, voice);
+      voiceOrderRef.current.push(pointerId);
+
+      // Snap all co-active voices to the new root, then balance energy
+      updateTonalRoot();
+      rebalanceGains();
 
     },
-    [ensureAudioContext]
+    [ensureAudioContext, updateTonalRoot, rebalanceGains]
   );
 
   const handlePointerMove = useCallback(
@@ -1047,7 +1207,11 @@ export default function App() {
 
       const gainValue = computeTargetGain(y, rect.height, voice.instrument);
       const pan = getPanForPosition(x, rect.width);
-      updateVoiceForMix(voice, mix.blendedFrequency, gainValue, pan, now);
+      // Snap to tonal root so the voice stays harmonically related to others
+      const snappedFreq = snapToRoot(mix.blendedFrequency, tonalRootRef.current);
+      updateVoiceForMix(voice, snappedFreq, gainValue, pan, now);
+      // Keep base gain in sync with position so rebalancing stays accurate
+      voice.baseGain = gainValue;
     },
     []
   );
