@@ -8,7 +8,7 @@ import React, {
 
 const GRID_ROWS = 5;
 const GRID_COLUMNS = 5;
-const STEP_DURATION_SECONDS = 0.6;
+const STEP_DURATION_SECONDS = 1.2;
 
 interface PatchSequencerProps {
   ensureAudioContext: () => Promise<AudioContext>;
@@ -23,128 +23,33 @@ interface SequencerInstrument {
   play: (context: AudioContext, when: number) => void;
 }
 
-const createNoiseBuffer = (context: AudioContext) => {
-  const buffer = context.createBuffer(1, context.sampleRate * 1.5, context.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < data.length; i += 1) {
-    data[i] = Math.random() * 2 - 1;
-  }
-  return buffer;
-};
-
 const INSTRUMENTS: SequencerInstrument[] = [
   {
-    id: "kick",
-    label: "Kick",
-    emoji: "🥔",
-    color: "#b45309",
+    id: "bloom",
+    label: "Bloom",
+    emoji: "🌸",
+    color: "#ff5dac",
     play: (context, when) => {
       const oscillator = context.createOscillator();
       oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(150, when);
-      oscillator.frequency.exponentialRampToValueAtTime(45, when + 0.4);
-
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(1, when);
-      gain.gain.exponentialRampToValueAtTime(0.001, when + 0.5);
-
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-
-      oscillator.start(when);
-      oscillator.stop(when + 0.5);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        gain.disconnect();
-      };
-    },
-  },
-  {
-    id: "snare",
-    label: "Drum",
-    emoji: "🍅",
-    color: "#ef4444",
-    play: (context, when) => {
-      const noise = context.createBufferSource();
-      noise.buffer = createNoiseBuffer(context);
-
-      const filter = context.createBiquadFilter();
-      filter.type = "highpass";
-      filter.frequency.setValueAtTime(1800, when);
-
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.6, when);
-      gain.gain.exponentialRampToValueAtTime(0.001, when + 0.25);
-
-      noise.connect(filter);
-      filter.connect(gain);
-      gain.connect(context.destination);
-
-      noise.start(when);
-      noise.stop(when + 0.3);
-      noise.onended = () => {
-        noise.disconnect();
-        filter.disconnect();
-        gain.disconnect();
-      };
-    },
-  },
-  {
-    id: "cymbal",
-    label: "Cymbal",
-    emoji: "🍋",
-    color: "#facc15",
-    play: (context, when) => {
-      const noise = context.createBufferSource();
-      noise.buffer = createNoiseBuffer(context);
-
-      const filter = context.createBiquadFilter();
-      filter.type = "highpass";
-      filter.frequency.setValueAtTime(6500, when);
-
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.4, when);
-      gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.35);
-
-      noise.connect(filter);
-      filter.connect(gain);
-      gain.connect(context.destination);
-
-      noise.start(when);
-      noise.stop(when + 0.4);
-      noise.onended = () => {
-        noise.disconnect();
-        filter.disconnect();
-        gain.disconnect();
-      };
-    },
-  },
-  {
-    id: "synth",
-    label: "Synth",
-    emoji: "🍇",
-    color: "#a855f7",
-    play: (context, when) => {
-      const oscillator = context.createOscillator();
-      oscillator.type = "sawtooth";
-      oscillator.frequency.setValueAtTime(440, when);
+      oscillator.frequency.setValueAtTime(220, when);
 
       const gain = context.createGain();
       gain.gain.setValueAtTime(0.0001, when);
-      gain.gain.exponentialRampToValueAtTime(0.4, when + 0.04);
-      gain.gain.exponentialRampToValueAtTime(0.001, when + 0.6);
+      gain.gain.linearRampToValueAtTime(0.28, when + 0.14);
+      gain.gain.setTargetAtTime(0.14, when + 0.14, 0.4);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 2.6);
 
       const filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(2200, when);
-      filter.frequency.exponentialRampToValueAtTime(800, when + 0.6);
+      filter.frequency.setValueAtTime(700, when);
 
       oscillator.connect(filter);
       filter.connect(gain);
       gain.connect(context.destination);
 
       oscillator.start(when);
-      oscillator.stop(when + 0.65);
+      oscillator.stop(when + 2.8);
       oscillator.onended = () => {
         oscillator.disconnect();
         filter.disconnect();
@@ -153,56 +58,32 @@ const INSTRUMENTS: SequencerInstrument[] = [
     },
   },
   {
-    id: "guitar",
-    label: "Guitar",
-    emoji: "🍑",
-    color: "#fb7185",
+    id: "drift",
+    label: "Drift",
+    emoji: "🌊",
+    color: "#34d2ff",
     play: (context, when) => {
       const oscillator = context.createOscillator();
       oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(660, when);
+      oscillator.frequency.setValueAtTime(329.628, when);
+      oscillator.detune.setValueAtTime(-5, when);
 
       const gain = context.createGain();
       gain.gain.setValueAtTime(0.0001, when);
-      gain.gain.exponentialRampToValueAtTime(0.5, when + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001, when + 0.5);
-
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-
-      oscillator.start(when);
-      oscillator.stop(when + 0.55);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        gain.disconnect();
-      };
-    },
-  },
-  {
-    id: "bass",
-    label: "Bass",
-    emoji: "🥕",
-    color: "#fb923c",
-    play: (context, when) => {
-      const oscillator = context.createOscillator();
-      oscillator.type = "square";
-      oscillator.frequency.setValueAtTime(110, when);
-
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.0001, when);
-      gain.gain.exponentialRampToValueAtTime(0.5, when + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.001, when + 0.6);
+      gain.gain.linearRampToValueAtTime(0.25, when + 0.18);
+      gain.gain.setTargetAtTime(0.12, when + 0.18, 0.5);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 3.0);
 
       const filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(420, when);
+      filter.frequency.setValueAtTime(780, when);
 
       oscillator.connect(filter);
       filter.connect(gain);
       gain.connect(context.destination);
 
       oscillator.start(when);
-      oscillator.stop(when + 0.65);
+      oscillator.stop(when + 3.2);
       oscillator.onended = () => {
         oscillator.disconnect();
         filter.disconnect();
@@ -211,35 +92,172 @@ const INSTRUMENTS: SequencerInstrument[] = [
     },
   },
   {
-    id: "piano",
-    label: "Piano",
-    emoji: "🍏",
+    id: "mist",
+    label: "Mist",
+    emoji: "🌫️",
+    color: "#b967ff",
+    play: (context, when) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(440, when);
+      oscillator.detune.setValueAtTime(5, when);
+
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.linearRampToValueAtTime(0.22, when + 0.16);
+      gain.gain.setTargetAtTime(0.10, when + 0.16, 0.45);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 2.8);
+
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(820, when);
+
+      oscillator.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start(when);
+      oscillator.stop(when + 3.0);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
+    },
+  },
+  {
+    id: "earth",
+    label: "Earth",
+    emoji: "🌿",
     color: "#4ade80",
     play: (context, when) => {
-      const createPartial = (ratio: number, gainAmount: number) => {
-        const osc = context.createOscillator();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(330 * ratio, when);
+      const oscillator = context.createOscillator();
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(164.814, when);
+      oscillator.detune.setValueAtTime(-3, when);
 
-        const partialGain = context.createGain();
-        partialGain.gain.setValueAtTime(0.0001, when);
-        partialGain.gain.exponentialRampToValueAtTime(gainAmount, when + 0.02);
-        partialGain.gain.exponentialRampToValueAtTime(0.001, when + 0.8);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.linearRampToValueAtTime(0.30, when + 0.20);
+      gain.gain.setTargetAtTime(0.15, when + 0.20, 0.5);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 3.2);
 
-        osc.connect(partialGain);
-        partialGain.connect(context.destination);
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(640, when);
 
-        osc.start(when);
-        osc.stop(when + 0.85);
-        osc.onended = () => {
-          osc.disconnect();
-          partialGain.disconnect();
-        };
+      oscillator.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start(when);
+      oscillator.stop(when + 3.5);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        filter.disconnect();
+        gain.disconnect();
       };
+    },
+  },
+  {
+    id: "tide",
+    label: "Tide",
+    emoji: "💧",
+    color: "#2b6bff",
+    play: (context, when) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(293.628, when);
 
-      createPartial(1, 0.35);
-      createPartial(2, 0.12);
-      createPartial(3, 0.06);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.linearRampToValueAtTime(0.26, when + 0.15);
+      gain.gain.setTargetAtTime(0.13, when + 0.15, 0.4);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 2.8);
+
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(720, when);
+
+      oscillator.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start(when);
+      oscillator.stop(when + 3.0);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
+    },
+  },
+  {
+    id: "glow",
+    label: "Glow",
+    emoji: "✨",
+    color: "#facc15",
+    play: (context, when) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(495, when);
+      oscillator.detune.setValueAtTime(7, when);
+
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.linearRampToValueAtTime(0.20, when + 0.17);
+      gain.gain.setTargetAtTime(0.09, when + 0.17, 0.45);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 2.6);
+
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(860, when);
+
+      oscillator.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start(when);
+      oscillator.stop(when + 2.8);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
+    },
+  },
+  {
+    id: "deep",
+    label: "Deep",
+    emoji: "🌙",
+    color: "#1f77ff",
+    play: (context, when) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(110, when);
+      oscillator.detune.setValueAtTime(-4, when);
+
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.linearRampToValueAtTime(0.32, when + 0.22);
+      gain.gain.setTargetAtTime(0.16, when + 0.22, 0.6);
+      gain.gain.exponentialRampToValueAtTime(0.0001, when + 3.8);
+
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(580, when);
+
+      oscillator.connect(filter);
+      filter.connect(gain);
+      gain.connect(context.destination);
+
+      oscillator.start(when);
+      oscillator.stop(when + 4.0);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
     },
   },
 ];
