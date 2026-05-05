@@ -70,6 +70,7 @@ interface Voice {
   vibratoGain: GainNode;
   instrument: InstrumentDefinition;
   currentCellIndex: number;
+  reverbSend: GainNode;
 }
 
 interface PointerMeta {
@@ -87,709 +88,407 @@ interface PointerMeta {
 const GRID_ROWS = 5;
 const GRID_COLUMNS = 5;
 
-const ROW_BASES = [554.37, 466.16, 369.99, 293.66, 220.0];
-const COLUMN_RATIOS = [1, 1.1225, 1.26, 1.498, 1.682];
+// A-major pentatonic roots (A2–A4) – any row×column combination is consonant
+const ROW_BASES = [440, 329.628, 220, 164.814, 110];
+// Just-intonation ratios of the pentatonic scale: unison, M2 (9/8), M3 (5/4), P5 (3/2), M6 (5/3)
+const COLUMN_RATIOS = [1, 1.125, 1.25, 1.5, 5 / 3];
 
 const makeInstrument = (config: InstrumentDefinition): InstrumentDefinition => config;
 
 const GRID_SPEC: Array<
   Array<{ hex: string; label: string; instrument: InstrumentDefinition }>
 > = [
+  // Row 0 – highest register (A4 range)
   [
     {
       hex: "#ff2f92",
-      label: "Nova",
+      label: "Mist",
       instrument: makeInstrument({
-        id: "nova",
-        waveform: "sawtooth",
-        detune: 6,
-        attack: 0.05,
+        id: "mist-0",
+        waveform: "sine",
+        detune: 5,
+        attack: 0.14,
         sustain: 0.62,
-        release: 0.48,
-        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
-        vibrato: { rate: 5.2, depth: 7 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 1,
-          detune: 14,
-          attack: 0.01,
-          decay: 0.2,
-          sustain: 0.28,
-          release: 0.32,
-          gain: 0.38,
-          filterFrequency: 6200,
-          filterQ: 1.2,
-        },
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 820, Q: 0.7 },
+        vibrato: { rate: 0.28, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 5, attack: 0.10, decay: 0.5, sustain: 0.4, release: 2.0, gain: 0.18, filterFrequency: 580, filterQ: 0.7 },
       }),
     },
     {
       hex: "#ff6b4a",
-      label: "Flare",
+      label: "Haze",
       instrument: makeInstrument({
-        id: "flare",
-        waveform: "square",
-        detune: -4,
-        attack: 0.03,
-        sustain: 0.55,
-        release: 0.42,
-        filter: { type: "bandpass", frequency: 3400, Q: 9.5 },
-        vibrato: { rate: 7.6, depth: 11 },
-        tap: {
-          waveform: "square",
-          octaveOffset: 0,
-          detune: -12,
-          attack: 0.006,
-          decay: 0.16,
-          sustain: 0.22,
-          release: 0.28,
-          gain: 0.36,
-          filterFrequency: 2600,
-          filterQ: 5,
-        },
+        id: "haze-1",
+        waveform: "triangle",
+        detune: -6,
+        attack: 0.16,
+        sustain: 0.60,
+        release: 3.0,
+        filter: { type: "lowpass", frequency: 760, Q: 0.65 },
+        vibrato: { rate: 0.32, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -6, attack: 0.10, decay: 0.5, sustain: 0.38, release: 2.2, gain: 0.17, filterFrequency: 540, filterQ: 0.65 },
       }),
     },
     {
       hex: "#ffd23f",
-      label: "Solar",
+      label: "Veil",
       instrument: makeInstrument({
-        id: "solar",
-        waveform: "triangle",
+        id: "veil-2",
+        waveform: "sine",
         detune: 8,
-        attack: 0.06,
-        sustain: 0.58,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 7800, Q: 0.7 },
-        vibrato: { rate: 3.8, depth: 5 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.012,
-          decay: 0.22,
-          sustain: 0.32,
-          release: 0.34,
-          gain: 0.32,
-          filterFrequency: 6400,
-          filterQ: 1.4,
-        },
+        attack: 0.12,
+        sustain: 0.64,
+        release: 2.6,
+        filter: { type: "lowpass", frequency: 880, Q: 0.6 },
+        vibrato: { rate: 0.25, depth: 3.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 8, attack: 0.09, decay: 0.45, sustain: 0.42, release: 1.8, gain: 0.19, filterFrequency: 620, filterQ: 0.6 },
       }),
     },
     {
       hex: "#7dff5c",
-      label: "Verdant",
+      label: "Dew",
       instrument: makeInstrument({
-        id: "verdant",
-        waveform: "sine",
-        detune: 2,
-        attack: 0.08,
-        sustain: 0.64,
-        release: 0.62,
-        filter: { type: "lowpass", frequency: 6200, Q: 0.8 },
-        vibrato: { rate: 4.4, depth: 6 },
-        tap: {
-          waveform: "sine",
-          octaveOffset: 1,
-          detune: 7,
-          attack: 0.015,
-          decay: 0.24,
-          sustain: 0.35,
-          release: 0.4,
-          gain: 0.28,
-          filterFrequency: 5400,
-          filterQ: 1,
-        },
+        id: "dew-3",
+        waveform: "triangle",
+        detune: -4,
+        attack: 0.18,
+        sustain: 0.58,
+        release: 3.2,
+        filter: { type: "lowpass", frequency: 700, Q: 0.75 },
+        vibrato: { rate: 0.35, depth: 2 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -4, attack: 0.11, decay: 0.55, sustain: 0.36, release: 2.4, gain: 0.16, filterFrequency: 500, filterQ: 0.7 },
       }),
     },
     {
       hex: "#32ffe0",
-      label: "Lagoon",
+      label: "Ether",
       instrument: makeInstrument({
-        id: "lagoon",
-        waveform: "sawtooth",
-        detune: -9,
-        attack: 0.04,
-        sustain: 0.6,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 6800, Q: 0.9 },
-        vibrato: { rate: 6.5, depth: 8 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 1,
-          attack: 0.01,
-          decay: 0.18,
-          sustain: 0.26,
-          release: 0.36,
-          gain: 0.35,
-          filterFrequency: 6000,
-          filterQ: 2,
-        },
+        id: "ether-4",
+        waveform: "sine",
+        detune: 3,
+        attack: 0.20,
+        sustain: 0.60,
+        release: 3.5,
+        filter: { type: "lowpass", frequency: 740, Q: 0.65 },
+        vibrato: { rate: 0.22, depth: 4 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 3, attack: 0.12, decay: 0.6, sustain: 0.34, release: 2.6, gain: 0.15, filterFrequency: 520, filterQ: 0.65 },
       }),
     },
   ],
+  // Row 1 – upper-middle register (E4 range)
   [
     {
       hex: "#b967ff",
-      label: "Lumen",
+      label: "Drift",
       instrument: makeInstrument({
-        id: "lumen",
+        id: "drift-5",
         waveform: "triangle",
-        detune: 4,
-        attack: 0.07,
-        sustain: 0.56,
-        release: 0.58,
-        filter: { type: "lowpass", frequency: 7400, Q: 0.6 },
-        vibrato: { rate: 3.6, depth: 4.5 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.014,
-          decay: 0.26,
-          sustain: 0.3,
-          release: 0.36,
-          gain: 0.3,
-          filterFrequency: 5800,
-          filterQ: 1.3,
-        },
+        detune: -5,
+        attack: 0.15,
+        sustain: 0.60,
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 780, Q: 0.7 },
+        vibrato: { rate: 0.30, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -5, attack: 0.10, decay: 0.5, sustain: 0.38, release: 2.0, gain: 0.18, filterFrequency: 560, filterQ: 0.7 },
       }),
     },
     {
       hex: "#ff5dac",
-      label: "Bloom",
+      label: "Float",
       instrument: makeInstrument({
-        id: "bloom",
-        waveform: "sawtooth",
-        detune: 10,
-        attack: 0.05,
-        sustain: 0.65,
-        release: 0.54,
-        filter: { type: "lowpass", frequency: 5400, Q: 1.1 },
-        vibrato: { rate: 5.8, depth: 9 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 0,
-          detune: 12,
-          attack: 0.008,
-          decay: 0.18,
-          sustain: 0.24,
-          release: 0.34,
-          gain: 0.38,
-          filterFrequency: 4200,
-          filterQ: 2.2,
-        },
+        id: "float-6",
+        waveform: "sine",
+        detune: 7,
+        attack: 0.13,
+        sustain: 0.62,
+        release: 2.6,
+        filter: { type: "lowpass", frequency: 840, Q: 0.65 },
+        vibrato: { rate: 0.26, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 7, attack: 0.09, decay: 0.48, sustain: 0.40, release: 1.9, gain: 0.19, filterFrequency: 600, filterQ: 0.65 },
       }),
     },
     {
       hex: "#ff9f1c",
-      label: "Spark",
+      label: "Hover",
       instrument: makeInstrument({
-        id: "spark",
-        waveform: "square",
-        detune: -6,
-        attack: 0.04,
+        id: "hover-7",
+        waveform: "triangle",
+        detune: -3,
+        attack: 0.17,
         sustain: 0.58,
-        release: 0.46,
-        filter: { type: "bandpass", frequency: 2800, Q: 7.5 },
-        vibrato: { rate: 7.1, depth: 12 },
-        tap: {
-          waveform: "square",
-          octaveOffset: 0,
-          detune: -7,
-          attack: 0.006,
-          decay: 0.16,
-          sustain: 0.2,
-          release: 0.28,
-          gain: 0.34,
-          filterFrequency: 2300,
-          filterQ: 6,
-        },
+        release: 3.0,
+        filter: { type: "lowpass", frequency: 720, Q: 0.72 },
+        vibrato: { rate: 0.38, depth: 2 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -3, attack: 0.10, decay: 0.52, sustain: 0.36, release: 2.2, gain: 0.17, filterFrequency: 510, filterQ: 0.68 },
       }),
     },
     {
       hex: "#5dffb5",
-      label: "Mist",
+      label: "Glide",
       instrument: makeInstrument({
-        id: "mist",
+        id: "glide-8",
         waveform: "sine",
-        detune: 3,
-        attack: 0.09,
-        sustain: 0.68,
-        release: 0.62,
-        filter: { type: "lowpass", frequency: 6000, Q: 0.9 },
-        vibrato: { rate: 4.8, depth: 5.5 },
-        tap: {
-          waveform: "sine",
-          octaveOffset: 1,
-          detune: 5,
-          attack: 0.016,
-          decay: 0.24,
-          sustain: 0.28,
-          release: 0.4,
-          gain: 0.27,
-          filterFrequency: 5200,
-          filterQ: 1.2,
-        },
+        detune: 4,
+        attack: 0.16,
+        sustain: 0.64,
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 800, Q: 0.68 },
+        vibrato: { rate: 0.33, depth: 3.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 4, attack: 0.11, decay: 0.5, sustain: 0.38, release: 2.1, gain: 0.18, filterFrequency: 570, filterQ: 0.65 },
       }),
     },
     {
       hex: "#34d2ff",
-      label: "Azure",
+      label: "Flow",
       instrument: makeInstrument({
-        id: "azure",
+        id: "flow-9",
         waveform: "triangle",
-        detune: -8,
-        attack: 0.06,
-        sustain: 0.6,
-        release: 0.56,
-        filter: { type: "lowpass", frequency: 7000, Q: 0.7 },
-        vibrato: { rate: 6.1, depth: 6.5 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.012,
-          decay: 0.22,
-          sustain: 0.32,
-          release: 0.34,
-          gain: 0.31,
-          filterFrequency: 5800,
-          filterQ: 1.5,
-        },
+        detune: -7,
+        attack: 0.19,
+        sustain: 0.60,
+        release: 3.2,
+        filter: { type: "lowpass", frequency: 680, Q: 0.65 },
+        vibrato: { rate: 0.28, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -7, attack: 0.12, decay: 0.55, sustain: 0.35, release: 2.3, gain: 0.16, filterFrequency: 480, filterQ: 0.62 },
       }),
     },
   ],
+  // Row 2 – middle register (A3 range)
   [
     {
       hex: "#ff3b30",
-      label: "Crimson",
+      label: "Ripple",
       instrument: makeInstrument({
-        id: "crimson",
-        waveform: "sawtooth",
-        detune: 5,
-        attack: 0.05,
-        sustain: 0.64,
-        release: 0.52,
-        filter: { type: "lowpass", frequency: 4200, Q: 1.3 },
-        vibrato: { rate: 5.9, depth: 10 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 0,
-          detune: 9,
-          attack: 0.008,
-          decay: 0.18,
-          sustain: 0.22,
-          release: 0.3,
-          gain: 0.36,
-          filterFrequency: 3800,
-          filterQ: 2.4,
-        },
+        id: "ripple-10",
+        waveform: "sine",
+        detune: 6,
+        attack: 0.14,
+        sustain: 0.62,
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 740, Q: 0.7 },
+        vibrato: { rate: 0.27, depth: 3.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 6, attack: 0.10, decay: 0.5, sustain: 0.38, release: 2.0, gain: 0.18, filterFrequency: 530, filterQ: 0.7 },
       }),
     },
     {
       hex: "#ff6f61",
-      label: "Glow",
+      label: "Wave",
       instrument: makeInstrument({
-        id: "glow",
+        id: "wave-11",
         waveform: "triangle",
         detune: -5,
-        attack: 0.07,
-        sustain: 0.6,
-        release: 0.56,
-        filter: { type: "lowpass", frequency: 5600, Q: 0.9 },
-        vibrato: { rate: 4.9, depth: 6 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.013,
-          decay: 0.24,
-          sustain: 0.28,
-          release: 0.36,
-          gain: 0.3,
-          filterFrequency: 5000,
-          filterQ: 1.4,
-        },
+        attack: 0.16,
+        sustain: 0.60,
+        release: 3.0,
+        filter: { type: "lowpass", frequency: 700, Q: 0.68 },
+        vibrato: { rate: 0.32, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -5, attack: 0.10, decay: 0.5, sustain: 0.36, release: 2.2, gain: 0.17, filterFrequency: 500, filterQ: 0.68 },
       }),
     },
     {
       hex: "#ffcf70",
-      label: "Honey",
+      label: "Surge",
       instrument: makeInstrument({
-        id: "honey",
+        id: "surge-12",
         waveform: "sine",
-        detune: 1,
-        attack: 0.08,
-        sustain: 0.66,
-        release: 0.64,
-        filter: { type: "lowpass", frequency: 6400, Q: 0.8 },
-        vibrato: { rate: 3.9, depth: 5 },
-        tap: {
-          waveform: "sine",
-          octaveOffset: 1,
-          attack: 0.015,
-          decay: 0.28,
-          sustain: 0.32,
-          release: 0.42,
-          gain: 0.26,
-          filterFrequency: 5200,
-          filterQ: 1.1,
-        },
+        detune: 2,
+        attack: 0.18,
+        sustain: 0.64,
+        release: 2.6,
+        filter: { type: "lowpass", frequency: 780, Q: 0.65 },
+        vibrato: { rate: 0.24, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 2, attack: 0.09, decay: 0.48, sustain: 0.40, release: 1.8, gain: 0.19, filterFrequency: 560, filterQ: 0.65 },
       }),
     },
     {
       hex: "#4ad0ff",
-      label: "Stream",
+      label: "Swell",
       instrument: makeInstrument({
-        id: "stream",
-        waveform: "sawtooth",
-        detune: -10,
-        attack: 0.04,
-        sustain: 0.58,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 6400, Q: 0.7 },
-        vibrato: { rate: 6.8, depth: 7 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 1,
-          attack: 0.009,
-          decay: 0.2,
-          sustain: 0.26,
-          release: 0.34,
-          gain: 0.34,
-          filterFrequency: 5200,
-          filterQ: 1.8,
-        },
+        id: "swell-13",
+        waveform: "triangle",
+        detune: -8,
+        attack: 0.20,
+        sustain: 0.62,
+        release: 3.2,
+        filter: { type: "lowpass", frequency: 660, Q: 0.70 },
+        vibrato: { rate: 0.36, depth: 2 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -8, attack: 0.11, decay: 0.55, sustain: 0.36, release: 2.4, gain: 0.16, filterFrequency: 470, filterQ: 0.65 },
       }),
     },
     {
       hex: "#2b6bff",
-      label: "Tide",
+      label: "Pool",
       instrument: makeInstrument({
-        id: "tide",
-        waveform: "triangle",
-        detune: 3,
-        attack: 0.06,
-        sustain: 0.6,
-        release: 0.55,
-        filter: { type: "lowpass", frequency: 6800, Q: 0.6 },
-        vibrato: { rate: 5.6, depth: 6.8 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.012,
-          decay: 0.24,
-          sustain: 0.3,
-          release: 0.36,
-          gain: 0.3,
-          filterFrequency: 5600,
-          filterQ: 1.3,
-        },
+        id: "pool-14",
+        waveform: "sine",
+        detune: 5,
+        attack: 0.15,
+        sustain: 0.60,
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 720, Q: 0.67 },
+        vibrato: { rate: 0.30, depth: 3.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 5, attack: 0.10, decay: 0.5, sustain: 0.38, release: 2.0, gain: 0.18, filterFrequency: 510, filterQ: 0.67 },
       }),
     },
   ],
+  // Row 3 – lower-middle register (E3 range)
   [
     {
       hex: "#5a3bff",
-      label: "Pulse",
+      label: "Earth",
       instrument: makeInstrument({
-        id: "pulse",
-        waveform: "square",
+        id: "earth-15",
+        waveform: "triangle",
         detune: -3,
-        attack: 0.05,
-        sustain: 0.5,
-        release: 0.44,
-        filter: { type: "bandpass", frequency: 2200, Q: 8.2 },
-        vibrato: { rate: 7.8, depth: 10 },
-        tap: {
-          waveform: "square",
-          octaveOffset: 0,
-          detune: -9,
-          attack: 0.007,
-          decay: 0.16,
-          sustain: 0.18,
-          release: 0.26,
-          gain: 0.32,
-          filterFrequency: 2000,
-          filterQ: 6.2,
-        },
+        attack: 0.18,
+        sustain: 0.62,
+        release: 3.2,
+        filter: { type: "lowpass", frequency: 640, Q: 0.72 },
+        vibrato: { rate: 0.25, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -3, attack: 0.11, decay: 0.55, sustain: 0.36, release: 2.2, gain: 0.17, filterFrequency: 460, filterQ: 0.70 },
       }),
     },
     {
       hex: "#8a46ff",
-      label: "Prism",
+      label: "Stone",
       instrument: makeInstrument({
-        id: "prism",
-        waveform: "sawtooth",
-        detune: 12,
-        attack: 0.05,
-        sustain: 0.58,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 4800, Q: 1.2 },
-        vibrato: { rate: 5.4, depth: 8.5 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 1,
-          attack: 0.01,
-          decay: 0.2,
-          sustain: 0.24,
-          release: 0.34,
-          gain: 0.34,
-          filterFrequency: 4600,
-          filterQ: 2,
-        },
+        id: "stone-16",
+        waveform: "sine",
+        detune: 7,
+        attack: 0.16,
+        sustain: 0.60,
+        release: 2.8,
+        filter: { type: "lowpass", frequency: 680, Q: 0.68 },
+        vibrato: { rate: 0.32, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 7, attack: 0.10, decay: 0.5, sustain: 0.38, release: 2.0, gain: 0.18, filterFrequency: 490, filterQ: 0.68 },
       }),
     },
     {
       hex: "#ff61f7",
-      label: "Fable",
+      label: "Grove",
       instrument: makeInstrument({
-        id: "fable",
+        id: "grove-17",
         waveform: "triangle",
-        detune: 6,
-        attack: 0.07,
-        sustain: 0.62,
-        release: 0.58,
-        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
-        vibrato: { rate: 4.3, depth: 6 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.014,
-          decay: 0.24,
-          sustain: 0.28,
-          release: 0.38,
-          gain: 0.3,
-          filterFrequency: 4800,
-          filterQ: 1.4,
-        },
+        detune: -6,
+        attack: 0.20,
+        sustain: 0.64,
+        release: 3.5,
+        filter: { type: "lowpass", frequency: 600, Q: 0.65 },
+        vibrato: { rate: 0.28, depth: 4 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -6, attack: 0.12, decay: 0.6, sustain: 0.34, release: 2.6, gain: 0.15, filterFrequency: 430, filterQ: 0.65 },
       }),
     },
     {
       hex: "#ff4b8c",
-      label: "Blaze",
+      label: "Moss",
       instrument: makeInstrument({
-        id: "blaze",
-        waveform: "sawtooth",
-        detune: -8,
-        attack: 0.04,
-        sustain: 0.57,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 5600, Q: 1 },
-        vibrato: { rate: 6.4, depth: 9 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 0,
-          detune: 10,
-          attack: 0.009,
-          decay: 0.18,
-          sustain: 0.22,
-          release: 0.32,
-          gain: 0.35,
-          filterFrequency: 4200,
-          filterQ: 2.1,
-        },
+        id: "moss-18",
+        waveform: "sine",
+        detune: 4,
+        attack: 0.17,
+        sustain: 0.62,
+        release: 3.0,
+        filter: { type: "lowpass", frequency: 660, Q: 0.70 },
+        vibrato: { rate: 0.35, depth: 2.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 4, attack: 0.11, decay: 0.52, sustain: 0.36, release: 2.2, gain: 0.17, filterFrequency: 470, filterQ: 0.68 },
       }),
     },
     {
       hex: "#ffa24c",
-      label: "Glowr",
+      label: "Fern",
       instrument: makeInstrument({
-        id: "glowr",
+        id: "fern-19",
         waveform: "triangle",
-        detune: 2,
-        attack: 0.06,
-        sustain: 0.59,
-        release: 0.52,
-        filter: { type: "lowpass", frequency: 6000, Q: 0.8 },
-        vibrato: { rate: 5.1, depth: 6.2 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.012,
-          decay: 0.22,
-          sustain: 0.3,
-          release: 0.34,
-          gain: 0.31,
-          filterFrequency: 5000,
-          filterQ: 1.5,
-        },
+        detune: -2,
+        attack: 0.19,
+        sustain: 0.60,
+        release: 3.2,
+        filter: { type: "lowpass", frequency: 620, Q: 0.67 },
+        vibrato: { rate: 0.30, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -2, attack: 0.12, decay: 0.58, sustain: 0.35, release: 2.4, gain: 0.16, filterFrequency: 450, filterQ: 0.66 },
       }),
     },
   ],
+  // Row 4 – lowest register (A2 range)
   [
     {
       hex: "#1f77ff",
-      label: "Skye",
+      label: "Deep",
       instrument: makeInstrument({
-        id: "skye",
+        id: "deep-20",
         waveform: "sine",
-        detune: -2,
-        attack: 0.09,
+        detune: -4,
+        attack: 0.22,
         sustain: 0.64,
-        release: 0.62,
-        filter: { type: "lowpass", frequency: 5600, Q: 0.7 },
-        vibrato: { rate: 3.8, depth: 4.2 },
-        tap: {
-          waveform: "sine",
-          octaveOffset: 1,
-          attack: 0.016,
-          decay: 0.28,
-          sustain: 0.32,
-          release: 0.42,
-          gain: 0.26,
-          filterFrequency: 4800,
-          filterQ: 1.1,
-        },
+        release: 3.8,
+        filter: { type: "lowpass", frequency: 580, Q: 0.70 },
+        vibrato: { rate: 0.22, depth: 4 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -4, attack: 0.13, decay: 0.65, sustain: 0.34, release: 2.8, gain: 0.15, filterFrequency: 420, filterQ: 0.68 },
       }),
     },
     {
       hex: "#15c6ff",
-      label: "Glacier",
+      label: "Cave",
       instrument: makeInstrument({
-        id: "glacier",
+        id: "cave-21",
         waveform: "triangle",
-        detune: 5,
-        attack: 0.07,
-        sustain: 0.6,
-        release: 0.56,
-        filter: { type: "lowpass", frequency: 6000, Q: 0.8 },
-        vibrato: { rate: 4.6, depth: 5.4 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.014,
-          decay: 0.26,
-          sustain: 0.3,
-          release: 0.38,
-          gain: 0.29,
-          filterFrequency: 5200,
-          filterQ: 1.3,
-        },
+        detune: 6,
+        attack: 0.20,
+        sustain: 0.62,
+        release: 3.5,
+        filter: { type: "lowpass", frequency: 560, Q: 0.68 },
+        vibrato: { rate: 0.25, depth: 3.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 6, attack: 0.12, decay: 0.62, sustain: 0.32, release: 2.6, gain: 0.16, filterFrequency: 400, filterQ: 0.65 },
       }),
     },
     {
       hex: "#2dff88",
-      label: "Grove",
+      label: "Abyss",
       instrument: makeInstrument({
-        id: "grove",
-        waveform: "sawtooth",
-        detune: -6,
-        attack: 0.05,
-        sustain: 0.58,
-        release: 0.5,
-        filter: { type: "lowpass", frequency: 5200, Q: 0.9 },
-        vibrato: { rate: 6.2, depth: 7.5 },
-        tap: {
-          waveform: "sawtooth",
-          octaveOffset: 0,
-          detune: 11,
-          attack: 0.009,
-          decay: 0.2,
-          sustain: 0.24,
-          release: 0.34,
-          gain: 0.34,
-          filterFrequency: 4400,
-          filterQ: 2,
-        },
+        id: "abyss-22",
+        waveform: "sine",
+        detune: -8,
+        attack: 0.24,
+        sustain: 0.66,
+        release: 4.0,
+        filter: { type: "lowpass", frequency: 540, Q: 0.65 },
+        vibrato: { rate: 0.20, depth: 4.5 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -8, attack: 0.14, decay: 0.7, sustain: 0.30, release: 3.0, gain: 0.14, filterFrequency: 380, filterQ: 0.62 },
       }),
     },
     {
       hex: "#aaff2c",
-      label: "Lush",
+      label: "Well",
       instrument: makeInstrument({
-        id: "lush",
+        id: "well-23",
         waveform: "triangle",
-        detune: 4,
-        attack: 0.08,
+        detune: 3,
+        attack: 0.22,
         sustain: 0.64,
-        release: 0.58,
-        filter: { type: "lowpass", frequency: 5800, Q: 0.85 },
-        vibrato: { rate: 4.2, depth: 5.8 },
-        tap: {
-          waveform: "triangle",
-          octaveOffset: 1,
-          attack: 0.014,
-          decay: 0.26,
-          sustain: 0.32,
-          release: 0.38,
-          gain: 0.3,
-          filterFrequency: 5200,
-          filterQ: 1.2,
-        },
+        release: 3.6,
+        filter: { type: "lowpass", frequency: 560, Q: 0.70 },
+        vibrato: { rate: 0.28, depth: 3 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: 3, attack: 0.13, decay: 0.65, sustain: 0.32, release: 2.7, gain: 0.15, filterFrequency: 400, filterQ: 0.67 },
       }),
     },
     {
       hex: "#ffd1ff",
-      label: "Glowm",
+      label: "Void",
       instrument: makeInstrument({
-        id: "glowm",
+        id: "void-24",
         waveform: "sine",
-        detune: -4,
-        attack: 0.1,
-        sustain: 0.66,
-        release: 0.64,
-        filter: { type: "lowpass", frequency: 5400, Q: 0.7 },
-        vibrato: { rate: 3.6, depth: 4.5 },
-        tap: {
-          waveform: "sine",
-          octaveOffset: 1,
-          attack: 0.016,
-          decay: 0.3,
-          sustain: 0.34,
-          release: 0.44,
-          gain: 0.24,
-          filterFrequency: 4600,
-          filterQ: 1,
-        },
+        detune: -5,
+        attack: 0.25,
+        sustain: 0.62,
+        release: 4.0,
+        filter: { type: "lowpass", frequency: 520, Q: 0.65 },
+        vibrato: { rate: 0.20, depth: 4 },
+        tap: { waveform: "sine", octaveOffset: 0, detune: -5, attack: 0.15, decay: 0.7, sustain: 0.30, release: 3.0, gain: 0.14, filterFrequency: 370, filterQ: 0.62 },
       }),
     },
   ],
 ];
-
-const PERCUSSIVE_PATTERN: boolean[][] = [
-  [true, false, true, false, true],
-  [false, true, false, true, false],
-  [true, false, true, false, true],
-  [false, true, false, true, false],
-  [true, false, true, false, true],
-];
-
-const createPercussiveInstrument = (
-  baseId: string,
-  baseFrequency: number,
-  variant: number
-): InstrumentDefinition => {
-  const waveforms: OscillatorType[] = [
-    "square",
-    "sawtooth",
-    "triangle",
-    "square",
-    "sine",
-  ];
-  const waveform = waveforms[variant % waveforms.length];
-  const detune = (variant % 5) * 2 - 4;
-  const filterFrequency = clamp(baseFrequency * 1.7 + variant * 35, 350, 5200);
-  const filterQ = 5 + (variant % 4) * 1.1;
-  const tapFilter = clamp(filterFrequency * 1.1, 500, 5600);
-
-  return makeInstrument({
-    id: `percussive-${baseId}`,
-    waveform,
-    detune,
-    attack: 0.008,
-    sustain: 0.18,
-    release: 0.16,
-    filter: { type: "bandpass", frequency: filterFrequency, Q: filterQ },
-    tap: {
-      waveform,
-      octaveOffset: 0,
-      detune: detune * 1.5,
-      attack: 0.003,
-      decay: 0.12,
-      sustain: 0.1,
-      release: 0.14,
-      gain: 0.38 + (variant % 3) * 0.03,
-      filterFrequency: tapFilter,
-      filterQ: filterQ + 1.5,
-    },
-  });
-};
 
 const GRID_CELLS: GridCell[] = (() => {
   const cells: GridCell[] = [];
@@ -798,16 +497,13 @@ const GRID_CELLS: GridCell[] = (() => {
     for (let col = 0; col < GRID_COLUMNS; col += 1) {
       const spec = GRID_SPEC[row][col];
       const frequency = ROW_BASES[row] * COLUMN_RATIOS[col];
-      const instrument = PERCUSSIVE_PATTERN[row][col]
-        ? createPercussiveInstrument(`${spec.instrument.id}-${id}`, frequency, id)
-        : spec.instrument;
       cells.push({
         id,
         label: spec.label,
         hex: spec.hex,
         color: hexToRgb(spec.hex),
         frequency,
-        instrument,
+        instrument: spec.instrument,
       });
       id += 1;
     }
@@ -825,6 +521,21 @@ const getPanForPosition = (x: number, width: number) => {
     return 0;
   }
   return clamp((x / width) * 2 - 1, -0.85, 0.85);
+};
+
+const createReverbBuffer = (context: AudioContext): AudioBuffer => {
+  const duration = 4;
+  const length = Math.floor(context.sampleRate * duration);
+  const buffer = context.createBuffer(2, length, context.sampleRate);
+  const decay = 2.5;
+  for (let c = 0; c < 2; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < length; i++) {
+      // Exponential amplitude decay: exponent controls how steeply the tail falls off
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+    }
+  }
+  return buffer;
 };
 
 const createSilentKick = (context: AudioContext) => {
@@ -941,13 +652,17 @@ const createVoice = (
   context: AudioContext,
   instrument: InstrumentDefinition,
   frequency: number,
-  pan: number
+  pan: number,
+  outputNode: AudioNode,
+  reverbNode: ConvolverNode | null
 ): Voice => {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const filter = context.createBiquadFilter();
   const vibratoOsc = context.createOscillator();
   const vibratoGain = context.createGain();
+  const reverbSend = context.createGain();
+  reverbSend.gain.value = 0.5;
 
   gain.gain.value = 0;
   vibratoGain.gain.value = instrument.vibrato?.depth ?? 0;
@@ -968,7 +683,11 @@ const createVoice = (
     filter.connect(gain);
   }
 
-  gain.connect(context.destination);
+  gain.connect(outputNode);
+  gain.connect(reverbSend);
+  if (reverbNode) {
+    reverbSend.connect(reverbNode);
+  }
 
   const now = context.currentTime;
   morphVoiceToInstrument(
@@ -981,6 +700,7 @@ const createVoice = (
       vibratoGain,
       instrument,
       currentCellIndex: -1,
+      reverbSend,
     },
     instrument,
     now
@@ -1000,6 +720,7 @@ const createVoice = (
     vibratoGain,
     instrument,
     currentCellIndex: -1,
+    reverbSend,
   };
 };
 
@@ -1026,6 +747,8 @@ const playTapSound = (
   cell: GridCell,
   x: number,
   y: number,
+  outputNode: AudioNode,
+  reverbNode: ConvolverNode | null,
   rainbowField?: RainbowField | null
 ) => {
   const now = context.currentTime;
@@ -1040,13 +763,20 @@ const playTapSound = (
   gain.gain.setValueAtTime(0.0001, now);
 
   const filter = context.createBiquadFilter();
-  filter.type = "bandpass";
+  filter.type = "lowpass";
   filter.frequency.setValueAtTime(tap.filterFrequency, now);
   filter.Q.setValueAtTime(tap.filterQ, now);
 
+  const reverbSend = context.createGain();
+  reverbSend.gain.value = 0.5;
+
   oscillator.connect(filter);
   filter.connect(gain);
-  gain.connect(context.destination);
+  gain.connect(outputNode);
+  gain.connect(reverbSend);
+  if (reverbNode) {
+    reverbSend.connect(reverbNode);
+  }
 
   gain.gain.exponentialRampToValueAtTime(tap.gain, now + tap.attack);
   gain.gain.linearRampToValueAtTime(
@@ -1065,6 +795,7 @@ const playTapSound = (
     try {
       oscillator.disconnect();
       filter.disconnect();
+      reverbSend.disconnect();
       gain.disconnect();
     } catch (error) {
       console.warn("Tap oscillator cleanup failed", error);
@@ -1090,6 +821,8 @@ export default function App() {
   const releaseTimersRef = useRef<Map<number, number>>(new Map());
   const activePointersRef = useRef<Set<number>>(new Set());
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
+  const compressorRef = useRef<DynamicsCompressorNode | null>(null);
+  const reverbRef = useRef<ConvolverNode | null>(null);
   const [activePage, setActivePage] = useState<SlideMenuPage>("play");
 
   const ensureAudioContext = useCallback(async () => {
@@ -1101,6 +834,25 @@ export default function App() {
       }
       context = new Constructor();
       audioContextRef.current = context;
+
+      // Shared output compressor – prevents clipping with many simultaneous voices
+      const compressor = context.createDynamicsCompressor();
+      compressor.threshold.value = -24;
+      compressor.knee.value = 30;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.05;
+      compressor.release.value = 0.4;
+      compressor.connect(context.destination);
+      compressorRef.current = compressor;
+
+      // Long diffuse reverb from a synthesised impulse response
+      const reverb = context.createConvolver();
+      reverb.buffer = createReverbBuffer(context);
+      const reverbOutput = context.createGain();
+      reverbOutput.gain.value = 0.35;
+      reverb.connect(reverbOutput);
+      reverbOutput.connect(compressor);
+      reverbRef.current = reverb;
     }
 
     if (context.state === "suspended") {
@@ -1144,6 +896,7 @@ export default function App() {
           voice.vibratoOsc.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
+          voice.reverbSend.disconnect();
           voice.gain.disconnect();
         } catch (error) {
           console.warn("Voice disconnect failed", error);
@@ -1221,7 +974,9 @@ export default function App() {
         context,
         mix.primaryCell.instrument,
         mix.blendedFrequency,
-        pan
+        pan,
+        compressorRef.current ?? context.destination,
+        reverbRef.current
       );
       voice.currentCellIndex = mix.primaryCell.id;
 
@@ -1329,6 +1084,8 @@ export default function App() {
           cell,
           x,
           y,
+          compressorRef.current ?? context.destination,
+          reverbRef.current,
           rainbowFieldRef.current
         );
       }
@@ -1377,6 +1134,7 @@ export default function App() {
           voice.vibratoOsc.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
+          voice.reverbSend.disconnect();
           voice.gain.disconnect();
         } catch (error) {
           console.warn("Voice cleanup failed", error);
