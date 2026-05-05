@@ -90,8 +90,8 @@ const GRID_COLUMNS = 5;
 
 // A-major pentatonic roots (A2–A4) – any row×column combination is consonant
 const ROW_BASES = [440, 329.628, 220, 164.814, 110];
-// Just-intonation ratios of the pentatonic scale: unison, M2, M3, P5, M6
-const COLUMN_RATIOS = [1, 1.125, 1.25, 1.5, 1.6667];
+// Just-intonation ratios of the pentatonic scale: unison, M2 (9/8), M3 (5/4), P5 (3/2), M6 (5/3)
+const COLUMN_RATIOS = [1, 1.125, 1.25, 1.5, 5 / 3];
 
 const makeInstrument = (config: InstrumentDefinition): InstrumentDefinition => config;
 
@@ -531,6 +531,7 @@ const createReverbBuffer = (context: AudioContext): AudioBuffer => {
   for (let c = 0; c < 2; c++) {
     const data = buffer.getChannelData(c);
     for (let i = 0; i < length; i++) {
+      // Exponential amplitude decay: exponent controls how steeply the tail falls off
       data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
     }
   }

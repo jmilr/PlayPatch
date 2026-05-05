@@ -200,6 +200,7 @@ const INSTRUMENTS: SequencerInstrument[] = [
     play: (context, when) => {
       const oscillator = context.createOscillator();
       oscillator.type = "sine";
+    // 495 Hz = A4 (440 Hz) × 9/8, which is B4 in just intonation (A-major pentatonic)
       oscillator.frequency.setValueAtTime(495, when);
       oscillator.detune.setValueAtTime(7, when);
 
