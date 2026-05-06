@@ -68,9 +68,14 @@ interface Voice {
   panner?: StereoPannerNode;
   vibratoOsc: OscillatorNode;
   vibratoGain: GainNode;
+  detuneOsc: OscillatorNode;
+  detuneGain: GainNode;
   instrument: InstrumentDefinition;
   currentCellIndex: number;
   reverbSend: GainNode;
+  intervalRatio: number;
+  baseGain: number;
+  startAudioTime: number;
 }
 
 interface PointerMeta {
@@ -92,6 +97,39 @@ const GRID_COLUMNS = 5;
 const ROW_BASES = [440, 329.628, 220, 164.814, 110];
 // Just-intonation ratios of the pentatonic scale: unison, M2 (9/8), M3 (5/4), P5 (3/2), M6 (5/3)
 const COLUMN_RATIOS = [1, 1.125, 1.25, 1.5, 5 / 3];
+
+// Consonant interval ratios spanning ~3 octaves for harmonic snapping
+const CONSONANT_RATIOS_ALL = [
+  0.25, 1 / 3, 3 / 8, 1 / 2, 2 / 3, 3 / 4,
+  1, 5 / 4, 4 / 3, 3 / 2, 5 / 3,
+  2, 5 / 2, 3, 4,
+];
+
+/** Return the consonant ratio (relative to root) nearest to rawRatio in log₂ space */
+const snapToConsonantRatio = (rawRatio: number): number => {
+  let best = CONSONANT_RATIOS_ALL[0];
+  let bestDist = Infinity;
+  for (const r of CONSONANT_RATIOS_ALL) {
+    const d = Math.abs(Math.log2(rawRatio) - Math.log2(r));
+    if (d < bestDist) { bestDist = d; best = r; }
+  }
+  return best;
+};
+
+/** Age decay time-constant (seconds) – voices recede over this period */
+const VOICE_AGE_TC = 12;
+/** Tonal-centre glide time-constant (seconds) – root pitch moves this slowly */
+const TONAL_GLIDE_TC = 2.0;
+/** Default tonal centre when no touches are active */
+const DEFAULT_TONAL_CENTRE = 220;
+/** Mod-loop interval in seconds (matches the setInterval period below) */
+const MOD_INTERVAL_SECONDS = 0.033;
+/** Lower and upper frequency bounds for voice oscillators (Hz) */
+const MIN_AUDIBLE_FREQ = 20;
+const MAX_AUDIBLE_FREQ = 20000;
+/** Dynamic range for individual voice gain */
+const MIN_VOICE_GAIN = 0.02;
+const MAX_VOICE_GAIN = 0.8;
 
 const makeInstrument = (config: InstrumentDefinition): InstrumentDefinition => config;
 
@@ -654,7 +692,8 @@ const createVoice = (
   frequency: number,
   pan: number,
   outputNode: AudioNode,
-  reverbNode: ConvolverNode | null
+  reverbNode: ConvolverNode | null,
+  globalLfoGain: GainNode | null
 ): Voice => {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
@@ -664,6 +703,16 @@ const createVoice = (
   const reverbSend = context.createGain();
   reverbSend.gain.value = 0.5;
 
+  // Subtle detuned oscillator (+8 cents, triangle) for organic warmth
+  const detuneOsc = context.createOscillator();
+  const detuneGain = context.createGain();
+  detuneOsc.type = "triangle";
+  detuneOsc.frequency.setValueAtTime(frequency, context.currentTime);
+  detuneOsc.detune.setValueAtTime(8, context.currentTime);
+  detuneGain.gain.value = 0.06;
+  detuneOsc.connect(detuneGain);
+  detuneGain.connect(gain);
+
   gain.gain.value = 0;
   vibratoGain.gain.value = instrument.vibrato?.depth ?? 0;
   vibratoOsc.type = "sine";
@@ -672,6 +721,11 @@ const createVoice = (
   oscillator.connect(filter);
   vibratoOsc.connect(vibratoGain);
   vibratoGain.connect(oscillator.frequency);
+
+  // Global slow LFO modulates filter cutoff across all voices
+  if (globalLfoGain) {
+    globalLfoGain.connect(filter.frequency);
+  }
 
   let panner: StereoPannerNode | undefined;
   if (context.createStereoPanner) {
@@ -698,9 +752,14 @@ const createVoice = (
       panner,
       vibratoOsc,
       vibratoGain,
+      detuneOsc,
+      detuneGain,
       instrument,
       currentCellIndex: -1,
       reverbSend,
+      intervalRatio: 1,
+      baseGain: 0,
+      startAudioTime: now,
     },
     instrument,
     now
@@ -710,6 +769,7 @@ const createVoice = (
 
   oscillator.start(now);
   vibratoOsc.start(now);
+  detuneOsc.start(now);
 
   return {
     oscillator,
@@ -718,9 +778,14 @@ const createVoice = (
     panner,
     vibratoOsc,
     vibratoGain,
+    detuneOsc,
+    detuneGain,
     instrument,
     currentCellIndex: -1,
     reverbSend,
+    intervalRatio: 1,
+    baseGain: 0,
+    startAudioTime: now,
   };
 };
 
@@ -749,15 +814,18 @@ const playTapSound = (
   y: number,
   outputNode: AudioNode,
   reverbNode: ConvolverNode | null,
+  tonalCentre: number,
   rainbowField?: RainbowField | null
 ) => {
   const now = context.currentTime;
   const tap = cell.instrument.tap;
   const oscillator = context.createOscillator();
   oscillator.type = tap.waveform;
-  const baseFrequency =
+  const rawFrequency =
     cell.frequency * Math.pow(2, tap.octaveOffset) + (tap.detune ?? 0);
-  oscillator.frequency.setValueAtTime(baseFrequency, now);
+  // Snap tap pitch to the nearest consonant interval from the current tonal centre
+  const snappedFrequency = tonalCentre * snapToConsonantRatio(rawFrequency / tonalCentre);
+  oscillator.frequency.setValueAtTime(snappedFrequency, now);
 
   const gain = context.createGain();
   gain.gain.setValueAtTime(0.0001, now);
@@ -823,6 +891,11 @@ export default function App() {
   const pointerMetaRef = useRef<Map<number, PointerMeta>>(new Map());
   const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const reverbRef = useRef<ConvolverNode | null>(null);
+  const tonalCentreRef = useRef<number>(DEFAULT_TONAL_CENTRE);
+  const tonalCentreTargetRef = useRef<number>(DEFAULT_TONAL_CENTRE);
+  const globalLfoRef = useRef<OscillatorNode | null>(null);
+  const globalLfoGainRef = useRef<GainNode | null>(null);
+  const modIntervalRef = useRef<number>(0);
   const [activePage, setActivePage] = useState<SlideMenuPage>("play");
 
   const ensureAudioContext = useCallback(async () => {
@@ -853,6 +926,18 @@ export default function App() {
       reverb.connect(reverbOutput);
       reverbOutput.connect(compressor);
       reverbRef.current = reverb;
+
+      // Shared slow LFO – modulates filter cutoff across all voices for global evolution
+      const lfoOsc = context.createOscillator();
+      const lfoGain = context.createGain();
+      lfoOsc.type = "sine";
+      lfoOsc.frequency.value = 0.08; // one cycle every ~12.5 s
+      lfoGain.gain.value = 120;      // ±120 Hz sweep on filter cutoff
+      lfoOsc.connect(lfoGain);
+      // lfoGain connects to individual voice filter.frequency params on voice creation
+      lfoOsc.start();
+      globalLfoRef.current = lfoOsc;
+      globalLfoGainRef.current = lfoGain;
     }
 
     if (context.state === "suspended") {
@@ -886,18 +971,25 @@ export default function App() {
       try {
         voice.oscillator.stop(now + releaseTime + 0.05);
         voice.vibratoOsc.stop(now + releaseTime + 0.05);
+        voice.detuneOsc.stop(now + releaseTime + 0.05);
       } catch (error) {
         console.warn("Oscillator stop failed", error);
       }
 
+      const lfoGain = globalLfoGainRef.current;
       const timeoutId = window.setTimeout(() => {
         try {
           voice.oscillator.disconnect();
           voice.vibratoOsc.disconnect();
+          voice.detuneOsc.disconnect();
+          voice.detuneGain.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
           voice.reverbSend.disconnect();
           voice.gain.disconnect();
+          if (lfoGain) {
+            lfoGain.disconnect(voice.filter.frequency);
+          }
         } catch (error) {
           console.warn("Voice disconnect failed", error);
         }
@@ -976,7 +1068,8 @@ export default function App() {
         mix.blendedFrequency,
         pan,
         compressorRef.current ?? context.destination,
-        reverbRef.current
+        reverbRef.current,
+        globalLfoGainRef.current
       );
       voice.currentCellIndex = mix.primaryCell.id;
 
@@ -986,13 +1079,27 @@ export default function App() {
         rect.height,
         mix.primaryCell.instrument
       );
+
+      // Seed the tonal centre from the first active voice; subsequent voices
+      // receive an interval ratio snapped to the nearest consonant relationship.
+      voicesRef.current.set(pointerId, voice);
+      if (voicesRef.current.size === 1) {
+        // This is the root voice – establish tonal centre immediately
+        tonalCentreRef.current = mix.blendedFrequency;
+        tonalCentreTargetRef.current = mix.blendedFrequency;
+        voice.intervalRatio = 1.0;
+      } else {
+        const rawRatio = mix.blendedFrequency / tonalCentreRef.current;
+        voice.intervalRatio = snapToConsonantRatio(rawRatio);
+      }
+      voice.baseGain = gainValue;
+      voice.startAudioTime = now;
+
       voice.gain.gain.setValueAtTime(0, now);
       voice.gain.gain.linearRampToValueAtTime(
         gainValue,
         now + Math.max(0.04, mix.primaryCell.instrument.attack)
       );
-
-      voicesRef.current.set(pointerId, voice);
 
     },
     [ensureAudioContext]
@@ -1045,9 +1152,18 @@ export default function App() {
         voice.currentCellIndex = mix.primaryCell.id;
       }
 
-      const gainValue = computeTargetGain(y, rect.height, voice.instrument);
+      // Update interval ratio and base gain; mod loop drives the actual
+      // oscillator frequency and voice gain from these values.
+      voice.intervalRatio = snapToConsonantRatio(
+        mix.blendedFrequency / tonalCentreRef.current
+      );
+      voice.baseGain = computeTargetGain(y, rect.height, voice.instrument);
+
+      // Pan is still driven directly for immediate spatial responsiveness
       const pan = getPanForPosition(x, rect.width);
-      updateVoiceForMix(voice, mix.blendedFrequency, gainValue, pan, now);
+      if (voice.panner) {
+        voice.panner.pan.setTargetAtTime(pan, now, 0.08);
+      }
     },
     []
   );
@@ -1086,6 +1202,7 @@ export default function App() {
           y,
           compressorRef.current ?? context.destination,
           reverbRef.current,
+          tonalCentreRef.current,
           rainbowFieldRef.current
         );
       }
@@ -1130,8 +1247,11 @@ export default function App() {
         try {
           voice.oscillator.stop();
           voice.vibratoOsc.stop();
+          voice.detuneOsc.stop();
           voice.oscillator.disconnect();
           voice.vibratoOsc.disconnect();
+          voice.detuneOsc.disconnect();
+          voice.detuneGain.disconnect();
           voice.filter.disconnect();
           voice.panner?.disconnect();
           voice.reverbSend.disconnect();
@@ -1147,10 +1267,85 @@ export default function App() {
       voicesRef.current.clear();
       releaseTimersRef.current.clear();
       activePointersRef.current.clear();
+      window.clearInterval(modIntervalRef.current);
+      try {
+        globalLfoRef.current?.stop();
+        globalLfoRef.current?.disconnect();
+        globalLfoGainRef.current?.disconnect();
+      } catch {
+        // ignore
+      }
       audioContextRef.current?.close().catch((error) => {
         console.warn("Audio context close failed", error);
       });
     };
+  }, []);
+
+  // Global modulation loop – runs at ~30 fps to:
+  //   1. Smoothly glide the tonal centre toward its target (log-space lerp)
+  //   2. Retune all active voices to tonal_centre × their consonant intervalRatio
+  //   3. Rebalance voice gains: age-weighted so total output stays constant
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      const context = audioContextRef.current;
+      if (!context) return;
+      const now = context.currentTime;
+
+      // Derive tonal centre target from geometric mean of active pointer frequencies
+      const metas = pointerMetaRef.current;
+      if (metas.size > 0) {
+        let logSum = 0;
+        metas.forEach((m) => {
+          logSum += Math.log2(m.lastFrequency);
+        });
+        tonalCentreTargetRef.current = Math.pow(2, logSum / metas.size);
+      } else if (voicesRef.current.size === 0) {
+        tonalCentreTargetRef.current = DEFAULT_TONAL_CENTRE;
+      }
+
+      // Glide tonal centre in log₂ space (TC ≈ TONAL_GLIDE_TC seconds)
+      const alpha = 1 - Math.exp(-MOD_INTERVAL_SECONDS / TONAL_GLIDE_TC);
+      const logCur = Math.log2(tonalCentreRef.current);
+      const logTgt = Math.log2(tonalCentreTargetRef.current);
+      tonalCentreRef.current = Math.pow(2, logCur + alpha * (logTgt - logCur));
+      const centre = tonalCentreRef.current;
+
+      const voices = voicesRef.current;
+      if (voices.size === 0) return;
+
+      // Compute age-weighted sums for gain normalisation
+      let ageWeightSum = 0;
+      const ageWeights = new Map<number, number>();
+      voices.forEach((voice, id) => {
+        const w = Math.exp(-(now - voice.startAudioTime) / VOICE_AGE_TC);
+        ageWeights.set(id, w);
+        ageWeightSum += w;
+      });
+
+      voices.forEach((voice, id) => {
+        // Retune to consonant interval relative to gliding tonal centre
+        const targetFreq = clamp(centre * voice.intervalRatio, MIN_AUDIBLE_FREQ, MAX_AUDIBLE_FREQ);
+        voice.oscillator.frequency.cancelScheduledValues(now);
+        voice.oscillator.frequency.setTargetAtTime(targetFreq, now, 0.1);
+        voice.detuneOsc.frequency.cancelScheduledValues(now);
+        voice.detuneOsc.frequency.setTargetAtTime(targetFreq, now, 0.1);
+
+        // Age-weighted gain: newer voices are louder; total stays proportional
+        // to base gain regardless of voice count (self-balancing).
+        // Skip voices still in their initial attack to avoid envelope fights.
+        const age = now - voice.startAudioTime;
+        if (age > voice.instrument.attack + 0.05) {
+          const w = ageWeights.get(id) ?? 0;
+          const targetGain = ageWeightSum > 0
+            ? clamp(voice.baseGain * w / ageWeightSum, MIN_VOICE_GAIN, MAX_VOICE_GAIN)
+            : voice.baseGain;
+          voice.gain.gain.setTargetAtTime(targetGain, now, 0.15);
+        }
+      });
+    }, 33);
+
+    modIntervalRef.current = intervalId;
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
