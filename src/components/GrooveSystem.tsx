@@ -243,6 +243,9 @@ function scheduleGhost(
   ghostGain.gain.value = GHOST_GAIN;
   ghostGain.connect(mainOutput);
   agent.playFn(audioCtx, when + STEP_SECONDS * 0.5, ghostGain, reverb);
+  // Disconnect ghost node after the note has fully decayed (max ~1.5 s after scheduled time)
+  const cleanupMs = Math.max(0, (when - audioCtx.currentTime + 1.5) * 1000);
+  setTimeout(() => { try { ghostGain.disconnect(); } catch { /* ignore */ } }, cleanupMs);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -260,6 +263,7 @@ export function GrooveSystem({
   const lastStepRef = useRef<number>(-1);
   const sizeRef = useRef({ w: 0, h: 0 });
   const rafRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null); // performance.now() of previous frame
 
   // ── Rest-position layout ────────────────────────────────────────────────────
   const computeRestPositions = useCallback((w: number, h: number) => {
@@ -407,6 +411,12 @@ export function GrooveSystem({
     const loop = (now: number) => {
       rafRef.current = requestAnimationFrame(loop);
 
+      // Frame delta for frame-rate-independent accumulations
+      const deltaSeconds = lastFrameTimeRef.current !== null
+        ? Math.min((now - lastFrameTimeRef.current) / 1000, 0.1) // cap at 100 ms to handle tab-hidden spikes
+        : 1 / 60;
+      lastFrameTimeRef.current = now;
+
       const canvas = canvasRef.current;
       const canvasCtx = canvas?.getContext("2d");
       if (!canvas || !canvasCtx) return;
@@ -478,7 +488,7 @@ export function GrooveSystem({
 
               // Phase includes any shift accumulated during a hold gesture
               const effectivePhase = s.dynamicPhase + Math.round(s.holdPhaseAccum);
-              const len = Math.max(1, s.dynamicLength);
+              const len = Math.max(DRIFT_LENGTH_RANGE[0], s.dynamicLength);
               const cycle = ((step - effectivePhase) % len + len) % len;
 
               // Hold subdivision: holding at medium+ energy fires freely on every beat
@@ -546,8 +556,8 @@ export function GrooveSystem({
         // Hold: accumulate energy and slowly phase-shift while pointer is held (not dragging)
         if (s.holdStart !== null && !s.dragging) {
           s.energy = Math.min(1, s.energy + HOLD_RATE);
-          // ~HOLD_PHASE_RATE steps/second at 60 fps
-          s.holdPhaseAccum += HOLD_PHASE_RATE / 60;
+          // Frame-rate-independent phase shift accumulation
+          s.holdPhaseAccum += HOLD_PHASE_RATE * deltaSeconds;
         }
 
         // Spring pull back toward rest position
