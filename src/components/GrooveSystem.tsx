@@ -13,6 +13,7 @@ const SPRING_K = 0.16;
 const SPRING_DAMPING = 0.78;
 const AGENT_RADIUS = 40;
 const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
+const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
 // ── Energy ────────────────────────────────────────────────────────────────────
 const ENERGY_THRESHOLD = 0.12;
@@ -277,7 +278,7 @@ export function GrooveSystem({
       const s = states[idx];
       const dx = x - s.restX;
       const dy = y - s.restY;
-      if (Math.hypot(dx, dy) > 12) {
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD) {
         s.dragging = true;
         s.x = x;
         s.y = y;
@@ -511,9 +512,9 @@ export function GrooveSystem({
       // ── Tempo pulse indicator (small dot at bottom-centre) ────────────────
       if (audioCtx && clockStartRef.current !== null) {
         const elapsed = audioCtx.currentTime - clockStartRef.current;
-        const beatPhase = (elapsed / (STEP_SECONDS * 2)) % 1; // quarter-beat phase
-        const pr = 4 + beatPhase * 6;
-        const alpha = 0.3 + beatPhase * 0.5;
+        const quarterBeatPhase = (elapsed / (STEP_SECONDS * 2)) % 1; // quarter-beat phase
+        const pr = 4 + quarterBeatPhase * 6;
+        const alpha = 0.3 + quarterBeatPhase * 0.5;
         canvasCtx.beginPath();
         canvasCtx.arc(w / 2, h - 20, pr, 0, 2 * Math.PI);
         canvasCtx.fillStyle = `rgba(99,202,255,${alpha})`;
