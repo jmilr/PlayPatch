@@ -714,16 +714,16 @@ export function GrooveSystem({
         canvasCtx.textAlign = "center";
         canvasCtx.textBaseline = "middle";
         canvasCtx.fillText(agent.emoji, s.x, s.y);
+        canvasCtx.font = "bold 11px system-ui, sans-serif";
+        canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
         if (isPortrait) {
-          canvasCtx.font = "bold 11px system-ui, sans-serif";
-          canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
+          canvasCtx.textAlign = "center";
           canvasCtx.textBaseline = "top";
           canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
         } else {
-          canvasCtx.font = "bold 11px system-ui, sans-serif";
-          canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
           canvasCtx.textAlign = "left";
-          canvasCtx.fillText(agent.label, s.x + r + 10, s.y - 6);
+          canvasCtx.textBaseline = "middle";
+          canvasCtx.fillText(agent.label, s.x + r + 10, s.y);
         }
 
         canvasCtx.restore();
