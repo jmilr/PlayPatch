@@ -37,6 +37,8 @@ const RELEASE_DECAY_CURVE = 1.35;
 // ── Interaction influence ─────────────────────────────────────────────────────
 const HOLD_PHASE_RATE = 0.30;         // phase steps shifted per second while holding
 const HOLD_SUBDIVIDE_THRESHOLD = 0.48;
+const HOLD_SUBDIVIDE_ODD_THRESHOLD = 0.74;
+const HOLD_SUBDIVIDE_ODD_CHANCE = 0.33;
 
 // ── Inter-agent influence ─────────────────────────────────────────────────────
 const INTER_AGENT_NUDGE = 0.026;
@@ -541,7 +543,7 @@ function beginReleaseEnvelope(state: AgentState, intensity: number): void {
     1,
     Math.round(randRange(RELEASE_LIFETIME_MIN_SECONDS, RELEASE_LIFETIME_MAX_SECONDS) / STEP_SECONDS)
   );
-  state.energy = Math.min(1, Math.max(state.energy, intensity));
+  state.energy = Math.min(1, intensity);
   state.releaseStartIntensity = state.energy;
   state.releaseCommitSteps = commitSteps;
   state.releaseDecaySteps = decaySteps;
@@ -774,6 +776,7 @@ export function GrooveSystem({
         } else if (rng < 0.7) {
           s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
         } else if (rng < 0.9) {
+          // This branch intentionally mutates both length and phase for stronger tap-driven evolution.
           s.dynamicLength = Math.max(
             DRIFT_LENGTH_RANGE[0],
             Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + (Math.random() < 0.5 ? 1 : -1))
@@ -918,7 +921,10 @@ export function GrooveSystem({
               // Hold subdivision: pressure while holding can briefly increase subdivision.
               const holdSubdivide = isHolding &&
                 s.energy >= HOLD_SUBDIVIDE_THRESHOLD &&
-                (step % 2 === 0 || (step % 2 === 1 && s.energy > 0.74 && Math.random() < 0.33));
+                (step % 2 === 0 ||
+                  (step % 2 === 1 &&
+                    s.energy > HOLD_SUBDIVIDE_ODD_THRESHOLD &&
+                    Math.random() < HOLD_SUBDIVIDE_ODD_CHANCE));
 
               if (
                 (shouldFire(cycle, len, s.energy, s.memoryAvg) || holdSubdivide) &&
@@ -959,9 +965,10 @@ export function GrooveSystem({
                 );
 
                 // Emergent ghost / echo note at high intensity, suppressed in busy moments.
+                const ghostRange = Math.max(0.0001, 1 - GHOST_ENERGY_THRESHOLD);
                 const ghostChance = GHOST_CHANCE *
                   (activeAgentCount >= GHOST_CROWDED_AGENT_THRESHOLD ? GHOST_CROWDED_MULTIPLIER : 1) *
-                  Math.max(0, (s.energy - GHOST_ENERGY_THRESHOLD) / (1 - GHOST_ENERGY_THRESHOLD));
+                  Math.max(0, (s.energy - GHOST_ENERGY_THRESHOLD) / ghostRange);
                 if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < ghostChance) {
                   scheduleGhost(agent, audioCtx, when, output, reverbRef.current);
                 }
