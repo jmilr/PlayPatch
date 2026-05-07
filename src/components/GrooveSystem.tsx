@@ -24,28 +24,27 @@ const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
 // ── Energy ────────────────────────────────────────────────────────────────────
-const ENERGY_THRESHOLD = 0.18;
-const HOLD_RATE = 0.008; // energy gained per animation frame while holding
-const MAX_TRIGGERS_PER_STEP = 2;
-const TAP_ENERGY_BOOST = 0.5; // energy added to an agent on a quick tap
+const ENERGY_THRESHOLD = 0.14;
+const HOLD_INTENSITY_PER_SECOND = 0.42;
+const MAX_TRIGGERS_PER_STEP_BASE = 4;
+const TAP_INTENSITY_BOOST = 0.44;
+const RELEASE_LIFETIME_MIN_SECONDS = 6.0;
+const RELEASE_LIFETIME_MAX_SECONDS = 10.0;
+const RELEASE_COMMIT_MIN_SECONDS = 0.5;
+const RELEASE_COMMIT_MAX_SECONDS = 1.5;
+const RELEASE_DECAY_CURVE = 1.35;
 
 // ── Interaction influence ─────────────────────────────────────────────────────
 const HOLD_PHASE_RATE = 0.30;         // phase steps shifted per second while holding
-const HOLD_SUBDIVIDE_THRESHOLD = 0.55; // energy above which hold triggers freely on even steps
-
-// ── Non-linear decay ──────────────────────────────────────────────────────────
-const DECAY_HIGH  = 0.78;  // fast decay when energy > 0.65
-const DECAY_MID   = 0.84;  // normal decay 0.30 – 0.65
-const DECAY_LOW   = 0.90;  // slow "sustain" decay when energy < 0.30
-const DECAY_JITTER = 0.03; // ±random variance each step
+const HOLD_SUBDIVIDE_THRESHOLD = 0.48;
 
 // ── Inter-agent influence ─────────────────────────────────────────────────────
-const INTER_AGENT_NUDGE = 0.015; // energy added to neighbours per fire event
+const INTER_AGENT_NUDGE = 0.026;
 
 // ── Ghost / echo notes ────────────────────────────────────────────────────────
-const GHOST_ENERGY_THRESHOLD = 0.72; // minimum energy for a ghost note
-const GHOST_CHANCE = 0.12;           // probability per qualifying fire
-const GHOST_GAIN  = 0.28;            // ghost volume relative to main
+const GHOST_ENERGY_THRESHOLD = 0.66;
+const GHOST_CHANCE = 0.08;
+const GHOST_GAIN = 0.22;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
@@ -76,10 +75,10 @@ function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuf
 
 const noiseBufferCache = new WeakMap<AudioContext, AudioBuffer>();
 
-function getCrashNoiseBuffer(ctx: AudioContext): AudioBuffer {
+function getPercNoiseBuffer(ctx: AudioContext): AudioBuffer {
   const cached = noiseBufferCache.get(ctx);
   if (cached) return cached;
-  const created = createNoiseBuffer(ctx, 1.1);
+  const created = createNoiseBuffer(ctx, 0.6);
   noiseBufferCache.set(ctx, created);
   return created;
 }
@@ -89,6 +88,7 @@ interface AgentDef {
   readonly label: string;
   readonly emoji: string;
   readonly color: string;
+  readonly layerPriority: 0 | 1 | 2; // lower = more structurally important in dense mixes
   readonly patternLength: number; // number of steps per cycle
   readonly phaseOffset: number;   // step offset to stagger entry
   readonly playFn: PlayFn;
@@ -117,6 +117,10 @@ interface AgentState {
   // Memory / drift
   memoryAvg: number;        // leaky-average fire density (0..1)
   driftTimer: number;       // steps until next spontaneous evolution event
+  releaseAgeSteps: number;      // elapsed steps since release envelope started
+  releaseCommitSteps: number;   // fixed-intensity window after release
+  releaseDecaySteps: number;    // fade duration after commit
+  releaseStartIntensity: number;// initial intensity of current release envelope
 }
 
 export interface GrooveSystemProps {
@@ -177,10 +181,9 @@ function makeTone(
   };
 }
 
-function makeSoftCrash(
+function makeHandDrum(
   bodyFreq: number,
   bodyDecay: number,
-  noiseCenterHz: number,
   peak: number
 ): PlayFn {
   return (ctx, when, output, reverb) => {
@@ -189,21 +192,21 @@ function makeSoftCrash(
     mix.connect(output);
 
     const send = ctx.createGain();
-    send.gain.value = 0.42;
+    send.gain.value = 0.26;
     mix.connect(send);
     if (reverb) send.connect(reverb);
 
     const bodyOsc = ctx.createOscillator();
     bodyOsc.type = "triangle";
     bodyOsc.frequency.setValueAtTime(bodyFreq, when);
-    bodyOsc.frequency.exponentialRampToValueAtTime(Math.max(55, bodyFreq * 0.52), when + bodyDecay);
+    bodyOsc.frequency.exponentialRampToValueAtTime(Math.max(58, bodyFreq * 0.58), when + bodyDecay);
     const bodyFilter = ctx.createBiquadFilter();
     bodyFilter.type = "lowpass";
-    bodyFilter.frequency.setValueAtTime(1800, when);
-    bodyFilter.frequency.exponentialRampToValueAtTime(460, when + bodyDecay);
+    bodyFilter.frequency.setValueAtTime(1150, when);
+    bodyFilter.frequency.exponentialRampToValueAtTime(360, when + bodyDecay);
     const bodyGain = ctx.createGain();
     bodyGain.gain.setValueAtTime(0.0001, when);
-    bodyGain.gain.linearRampToValueAtTime(peak * 0.55, when + 0.012);
+    bodyGain.gain.linearRampToValueAtTime(peak * 0.68, when + 0.018);
     bodyGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay);
 
     bodyOsc.connect(bodyFilter);
@@ -211,21 +214,21 @@ function makeSoftCrash(
     bodyGain.connect(mix);
 
     const noise = ctx.createBufferSource();
-    noise.buffer = getCrashNoiseBuffer(ctx);
+    noise.buffer = getPercNoiseBuffer(ctx);
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = "bandpass";
-    noiseFilter.frequency.setValueAtTime(noiseCenterHz, when);
-    noiseFilter.Q.value = 0.85;
+    noiseFilter.frequency.setValueAtTime(bodyFreq * 5.2, when);
+    noiseFilter.Q.value = 0.7;
     const noiseGain = ctx.createGain();
     noiseGain.gain.setValueAtTime(0.0001, when);
-    noiseGain.gain.linearRampToValueAtTime(peak, when + 0.008);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay * 1.35);
+    noiseGain.gain.linearRampToValueAtTime(peak * 0.26, when + 0.014);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay * 0.9);
 
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
     noiseGain.connect(mix);
 
-    const stopAt = when + bodyDecay * 1.35 + 0.1;
+    const stopAt = when + bodyDecay + 0.1;
     bodyOsc.start(when);
     bodyOsc.stop(stopAt);
     noise.start(when);
@@ -250,118 +253,130 @@ function makeSoftCrash(
   };
 }
 
-function makeSoftBell(freq: number): PlayFn {
+function makeWoodBlock(freq: number, peak: number): PlayFn {
   return (ctx, when, output, reverb) => {
-    const partials: Array<{ mul: number; gain: number; decay: number }> = [
-      { mul: 1, gain: 0.14, decay: 1.2 },
-      { mul: 2.01, gain: 0.08, decay: 0.9 },
-      { mul: 3.18, gain: 0.05, decay: 0.7 },
-    ];
-    let remainingPartials = partials.length;
+    const osc = ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(freq, when);
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.66, when + 0.16);
+
+    const band = ctx.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.setValueAtTime(Math.max(300, freq * 2.6), when);
+    band.Q.value = 1.4;
+
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.linearRampToValueAtTime(peak, when + 0.008);
+    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.24);
 
     const send = ctx.createGain();
-    send.gain.value = 0.58;
+    send.gain.value = 0.22;
     if (reverb) send.connect(reverb);
 
-    partials.forEach(({ mul, gain, decay }) => {
-      const osc = ctx.createOscillator();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(freq * mul, when);
+    osc.connect(band);
+    band.connect(amp);
+    amp.connect(output);
+    amp.connect(send);
 
-      const amp = ctx.createGain();
-      amp.gain.setValueAtTime(0.0001, when);
-      amp.gain.linearRampToValueAtTime(gain, when + 0.01);
-      amp.gain.exponentialRampToValueAtTime(0.0001, when + decay);
-
-      osc.connect(amp);
-      amp.connect(output);
-      amp.connect(send);
-
-      const stopAt = when + decay + 0.12;
-      osc.start(when);
-      osc.stop(stopAt);
-      osc.onended = () => {
-        try {
-          osc.disconnect();
-          amp.disconnect();
-          remainingPartials -= 1;
-          if (remainingPartials === 0) send.disconnect();
-        } catch { /* ignore */ }
-      };
-    });
+    const stopAt = when + 0.34;
+    osc.start(when);
+    osc.stop(stopAt);
+    osc.onended = () => {
+      try {
+        osc.disconnect();
+        band.disconnect();
+        amp.disconnect();
+        send.disconnect();
+      } catch { /* ignore */ }
+    };
   };
 }
 
-function makeWarmGuitarStrum(rootHz: number): PlayFn {
-  // Warm major-key voicings (semitone offsets relative to the provided root pitch).
-  const chordSemitoneSets = [
-    [0, 4, 7, 14],
-    [5, 9, 12, 16],
-    [7, 11, 14, 19],
-    [9, 12, 16, 19],
-    [4, 7, 11, 16],
-    [2, 5, 9, 14],
-  ];
-
+function makeKalimba(freq: number): PlayFn {
   return (ctx, when, output, reverb) => {
-    const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
-    const chord = chordSemitoneSets[Math.floor(Math.random() * chordSemitoneSets.length)];
-    let remainingNotes = chord.length;
-    const reverbSend = ctx.createGain();
-    reverbSend.gain.value = 0.5;
-    if (reverb) reverbSend.connect(reverb);
+    const fundamental = ctx.createOscillator();
+    fundamental.type = "triangle";
+    fundamental.frequency.setValueAtTime(freq, when);
 
-    chord.forEach((semi, idx) => {
-      const start = when + idx * 0.035 + randomInRange(0, 0.01);
-      const freq = rootHz * Math.pow(2, semi / 12);
+    const tine = ctx.createOscillator();
+    tine.type = "sine";
+    tine.frequency.setValueAtTime(freq * 2.02, when);
 
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(freq, start);
-      osc.detune.setValueAtTime(randomInRange(-5, 5), start);
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(1650, when);
+    filter.frequency.exponentialRampToValueAtTime(540, when + 0.75);
 
-      const harmonic = ctx.createOscillator();
-      harmonic.type = "sine";
-      harmonic.frequency.setValueAtTime(freq * 2, start);
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.linearRampToValueAtTime(0.14, when + 0.012);
+    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.72);
 
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(2400, start);
-      filter.frequency.exponentialRampToValueAtTime(720, start + 1.8);
-      filter.Q.value = 1.1;
+    const tineMix = ctx.createGain();
+    tineMix.gain.value = 0.22;
+    const send = ctx.createGain();
+    send.gain.value = 0.38;
+    if (reverb) send.connect(reverb);
 
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(0.11, start + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.8);
+    fundamental.connect(filter);
+    tine.connect(tineMix);
+    tineMix.connect(filter);
+    filter.connect(amp);
+    amp.connect(output);
+    amp.connect(send);
 
-      const harmonicGain = ctx.createGain();
-      harmonicGain.gain.value = 0.33;
+    const stopAt = when + 0.9;
+    fundamental.start(when);
+    tine.start(when);
+    fundamental.stop(stopAt);
+    tine.stop(stopAt);
+    tine.onended = () => {
+      try {
+        fundamental.disconnect();
+        tine.disconnect();
+        filter.disconnect();
+        tineMix.disconnect();
+        amp.disconnect();
+        send.disconnect();
+      } catch { /* ignore */ }
+    };
+  };
+}
 
-      osc.connect(filter);
-      harmonic.connect(harmonicGain);
-      harmonicGain.connect(filter);
-      filter.connect(gain);
-      gain.connect(output);
-      gain.connect(reverbSend);
+function makeSoftShaker(centerHz: number, peak: number): PlayFn {
+  return (ctx, when, output, reverb) => {
+    const noise = ctx.createBufferSource();
+    noise.buffer = getPercNoiseBuffer(ctx);
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(centerHz, when);
+    filter.Q.value = 0.65;
+    const amp = ctx.createGain();
+    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.linearRampToValueAtTime(peak, when + 0.005);
+    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.16);
 
-      const stopAt = start + 1.95;
-      osc.start(start);
-      harmonic.start(start);
-      osc.stop(stopAt);
-      harmonic.stop(stopAt);
-      harmonic.onended = () => {
-        try {
-          osc.disconnect();
-          harmonic.disconnect();
-          harmonicGain.disconnect();
-          filter.disconnect();
-          gain.disconnect();
-          remainingNotes -= 1;
-          if (remainingNotes === 0) reverbSend.disconnect();
-        } catch { /* ignore */ }
-      };
-    });
+    const send = ctx.createGain();
+    send.gain.value = 0.18;
+    if (reverb) send.connect(reverb);
+
+    noise.connect(filter);
+    filter.connect(amp);
+    amp.connect(output);
+    amp.connect(send);
+
+    const stopAt = when + 0.28;
+    noise.start(when);
+    noise.stop(stopAt);
+    noise.onended = () => {
+      try {
+        noise.disconnect();
+        filter.disconnect();
+        amp.disconnect();
+        send.disconnect();
+      } catch { /* ignore */ }
+    };
   };
 }
 
@@ -374,90 +389,100 @@ const AGENTS: AgentDef[] = [
     label: "Bloom",
     emoji: "🌸",
     color: "#ff5dac",
+    layerPriority: 0,
     patternLength: 8,
     phaseOffset: 0,
-    playFn: makeTone(220, "sine", 700, 0.06, 0.55, 0.22),
+    playFn: makeKalimba(220),
   },
   {
     id: 1,
     label: "Drift",
     emoji: "🌊",
     color: "#34d2ff",
+    layerPriority: 1,
     patternLength: 6,
     phaseOffset: 2,
-    playFn: makeTone(329.628, "triangle", 620, 0.07, 0.60, 0.18),
+    playFn: makeWoodBlock(329.628, 0.15),
   },
   {
     id: 2,
     label: "Mist",
     emoji: "🌫️",
     color: "#b967ff",
+    layerPriority: 1,
     patternLength: 8,
     phaseOffset: 1,
-    playFn: makeTone(440, "sine", 800, 0.05, 0.50, 0.20),
+    playFn: makeSoftShaker(2200, 0.11),
   },
   {
     id: 3,
     label: "Earth",
     emoji: "🌿",
     color: "#4ade80",
+    layerPriority: 0,
     patternLength: 12,
     phaseOffset: 4,
-    playFn: makeTone(164.814, "triangle", 560, 0.10, 0.65, 0.24),
+    playFn: makeHandDrum(164.814, 0.62, 0.18),
   },
   {
     id: 4,
     label: "Deep",
     emoji: "🌙",
     color: "#1f77ff",
+    layerPriority: 0,
     patternLength: 4,
     phaseOffset: 0,
-    playFn: makeTone(110, "sine", 500, 0.12, 0.70, 0.28),
+    playFn: makeHandDrum(110, 0.78, 0.2),
   },
   {
     id: 5,
     label: "Ember",
     emoji: "🔥",
     color: "#ff8a65",
+    layerPriority: 1,
     patternLength: 10,
     phaseOffset: 3,
-    playFn: makeSoftCrash(196, 0.85, 760, 0.13),
+    playFn: makeKalimba(196),
   },
   {
     id: 6,
     label: "Glow",
     emoji: "🕯️",
     color: "#ffb74d",
+    layerPriority: 2,
     patternLength: 7,
     phaseOffset: 1,
-    playFn: makeSoftCrash(246.942, 0.72, 1280, 0.11),
+    playFn: makeWoodBlock(246.942, 0.13),
   },
   {
     id: 7,
     label: "Hush",
     emoji: "☁️",
     color: "#f4a261",
+    layerPriority: 2,
     patternLength: 9,
     phaseOffset: 4,
-    playFn: makeSoftCrash(164.814, 1.05, 980, 0.12),
+    playFn: makeSoftShaker(1700, 0.1),
   },
   {
     id: 8,
     label: "Dusk",
     emoji: "🌆",
     color: "#c084fc",
+    layerPriority: 1,
     patternLength: 11,
     phaseOffset: 5,
-    playFn: makeSoftBell(659.255),
+    playFn: makeKalimba(329.628),
   },
   {
     id: 9,
     label: "Amber",
     emoji: "🍯",
     color: "#f59e0b",
+    layerPriority: 2,
     patternLength: 5,
     phaseOffset: 2,
-    playFn: makeWarmGuitarStrum(110),
+    playFn: makeWoodBlock(220, 0.12),
   },
 ];
 
@@ -469,23 +494,79 @@ const AGENTS: AgentDef[] = [
  * active agents stay slightly warmer.
  *
  *  eff ≥ 0.12  → downbeat only (step 0 always fires, guarded by caller)
- *  eff ≥ 0.25  → + half-note point (step at length/2)
- *  eff ≥ 0.45  → + quarter-note points (length/4, 3*length/4)
- *  eff ≥ 0.65  → + all even steps
- *  eff ≥ 0.80  → + all remaining steps except the last
+ *  eff ≥ 0.22  → + half-note point (step at length/2)
+ *  eff ≥ 0.38  → + quarter-note points (length/4, 3*length/4)
+ *  eff ≥ 0.56  → + all even steps
+ *  eff ≥ 0.72  → probabilistic odd-step syncopation
+ *  eff ≥ 0.86  → occasional extra fills
  */
 function shouldFire(step: number, length: number, energy: number, memoryAvg: number): boolean {
   const eff = Math.min(1, energy + memoryAvg * MEMORY_BIAS);
   if (step === 0) return true;
   // Half-note point
-  if (eff >= 0.25 && step * 2 === length) return true;
+  if (eff >= 0.22 && step * 2 === length) return true;
   // Quarter-note points (integer only)
-  if (eff >= 0.45 && (step * 4 === length || step * 4 === length * 3)) return true;
+  if (eff >= 0.38 && (step * 4 === length || step * 4 === length * 3)) return true;
   // All even steps
-  if (eff >= 0.65 && step % 2 === 0) return true;
-  // Everything except the last step
-  if (eff >= 0.80 && step < length - 1) return true;
+  if (eff >= 0.56 && step % 2 === 0) return true;
+  // Syncopation and fills taper away naturally as intensity drops.
+  if (eff >= 0.72 && step % 2 === 1 && step < length - 1) {
+    return Math.random() < (eff - 0.72) * 1.2;
+  }
+  if (eff >= 0.86 && step < length - 1) {
+    return Math.random() < (eff - 0.86) * 0.85;
+  }
   return false;
+}
+
+function randRange(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
+function beginReleaseEnvelope(state: AgentState, intensity: number): void {
+  const commitSteps = Math.max(
+    1,
+    Math.round(randRange(RELEASE_COMMIT_MIN_SECONDS, RELEASE_COMMIT_MAX_SECONDS) / STEP_SECONDS)
+  );
+  const decaySteps = Math.max(
+    1,
+    Math.round(randRange(RELEASE_LIFETIME_MIN_SECONDS, RELEASE_LIFETIME_MAX_SECONDS) / STEP_SECONDS)
+  );
+  state.energy = Math.min(1, Math.max(state.energy, intensity));
+  state.releaseStartIntensity = state.energy;
+  state.releaseCommitSteps = commitSteps;
+  state.releaseDecaySteps = decaySteps;
+  state.releaseAgeSteps = 0;
+}
+
+function releaseEnvelopeValue(state: AgentState): number {
+  const commit = state.releaseCommitSteps;
+  const decay = state.releaseDecaySteps;
+  if (state.releaseAgeSteps <= commit) return state.releaseStartIntensity;
+  const decayAge = state.releaseAgeSteps - commit;
+  const t = Math.min(1, decayAge / Math.max(1, decay));
+  return state.releaseStartIntensity * Math.pow(1 - t, RELEASE_DECAY_CURVE);
+}
+
+function triggerDynamicHit(
+  agent: AgentDef,
+  ctx: AudioContext,
+  when: number,
+  output: AudioNode,
+  reverb: ConvolverNode | null,
+  intensity: number,
+  overlapIndex: number,
+  activeAgentCount: number
+): void {
+  const level = ctx.createGain();
+  const crowdSoft = 1 - Math.min(0.46, Math.max(0, activeAgentCount - 4) * 0.065);
+  const overlapSoft = 1 / Math.sqrt(1 + overlapIndex * 0.9);
+  const intensitySoft = 0.34 + intensity * 0.78;
+  level.gain.value = Math.max(0.08, crowdSoft * overlapSoft * intensitySoft);
+  level.connect(output);
+  agent.playFn(ctx, when, level, reverb);
+  const cleanupMs = Math.max(0, (when - ctx.currentTime + 1.6) * 1000);
+  setTimeout(() => { try { level.disconnect(); } catch { /* ignore */ } }, cleanupMs);
 }
 
 // ── Ghost / echo note helper ──────────────────────────────────────────────────
@@ -669,27 +750,37 @@ export function GrooveSystem({
       // Tap: short press with no significant drag → schedule quantised note + small mutation
       if (!wasDragging && holdDuration < 280) {
         s.scheduledTap = true;
-        s.energy = Math.max(s.energy, TAP_ENERGY_BOOST);
+        s.energy = Math.min(1, Math.max(s.energy, TAP_INTENSITY_BOOST));
         // Introduce a small random pattern mutation: length ±1, phase ±1, or both
         const rng = Math.random();
-        if (rng < 0.4) {
+        if (rng < 0.35) {
           const delta = Math.random() < 0.5 ? 1 : -1;
           s.dynamicLength = Math.max(
             DRIFT_LENGTH_RANGE[0],
             Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + delta)
           );
-        } else if (rng < 0.8) {
+        } else if (rng < 0.7) {
+          s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
+        } else if (rng < 0.9) {
+          s.dynamicLength = Math.max(
+            DRIFT_LENGTH_RANGE[0],
+            Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + (Math.random() < 0.5 ? 1 : -1))
+          );
           s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
         }
-        // (remaining ~20%: no mutation this tap — preserves the current feel)
+        beginReleaseEnvelope(s, s.energy);
       }
 
       // Release drag: store displacement as energy and kick spring
       if (wasDragging) {
         const dist = Math.hypot(s.x - s.restX, s.y - s.restY);
-        s.energy = Math.min(1, dist / DRAG_ENERGY_SCALE);
+        const releasedIntensity = Math.min(1, dist / DRAG_ENERGY_SCALE);
+        s.energy = releasedIntensity;
         s.vx = (s.restX - s.x) * 0.05;
         s.vy = (s.restY - s.y) * 0.05;
+        beginReleaseEnvelope(s, releasedIntensity);
+      } else if (holdDuration >= 280) {
+        beginReleaseEnvelope(s, Math.max(s.energy, ENERGY_THRESHOLD));
       }
 
       // Persist any phase shift accumulated during this hold gesture
@@ -732,25 +823,43 @@ export function GrooveSystem({
         if (currentStep > lastStepRef.current) {
           for (let step = lastStepRef.current + 1; step <= currentStep; step++) {
             let triggersThisStep = 0;
+            const activeAgentCount = states.reduce(
+              (count, s) => count + (s.energy >= ENERGY_THRESHOLD || s.scheduledTap ? 1 : 0),
+              0
+            );
+            const stepTriggerCap = Math.max(
+              2,
+              MAX_TRIGGERS_PER_STEP_BASE - (activeAgentCount >= 8 ? 1 : 0)
+            );
 
             // Track which agents fire this step (for inter-agent influence)
             const firedThisStep = new Array<boolean>(states.length).fill(false);
 
             // User-scheduled taps have priority
             for (let i = 0; i < states.length; i++) {
-              if (triggersThisStep >= MAX_TRIGGERS_PER_STEP) break;
               const s = states[i];
               if (!s.scheduledTap) continue;
+              if (triggersThisStep >= stepTriggerCap) continue;
 
               const swing = step % 2 === 1 ? SWING_LATE * STEP_SECONDS : 0;
               const when = clockStartRef.current! + step * STEP_SECONDS + swing;
               const agent = AGENTS[i];
               const output = compressorRef.current ?? audioCtx.destination;
-              agent.playFn(audioCtx, when, output, reverbRef.current);
+              triggerDynamicHit(
+                agent,
+                audioCtx,
+                when,
+                output,
+                reverbRef.current,
+                Math.max(s.energy, TAP_INTENSITY_BOOST),
+                triggersThisStep,
+                activeAgentCount
+              );
               s.pulseUntil = performance.now() + 220;
               s.scheduledTap = false;
               firedThisStep[i] = true;
               triggersThisStep++;
+              s.memoryAvg = s.memoryAvg * (1 - 1 / MEMORY_TC) + 1 / MEMORY_TC;
               rainbowFieldRef.current?.pulse(
                 s.x, s.y, 220 + i * 55, hexToRgb(agent.color), 180
               );
@@ -758,7 +867,6 @@ export function GrooveSystem({
 
             // Autonomous triggers from agent energy + pattern
             for (let i = 0; i < states.length; i++) {
-              if (triggersThisStep >= MAX_TRIGGERS_PER_STEP) break;
               const s = states[i];
               const agent = AGENTS[i];
 
@@ -777,11 +885,15 @@ export function GrooveSystem({
                 }
               }
 
+              const isHolding = s.holdStart !== null && !s.dragging;
+              if (!isHolding) {
+                s.releaseAgeSteps += 1;
+                s.energy = releaseEnvelopeValue(s);
+              }
+
               if (s.energy < ENERGY_THRESHOLD) {
                 // Memory: no fire
                 s.memoryAvg *= 1 - 1 / MEMORY_TC;
-                // Slow non-linear drain below threshold
-                s.energy *= DECAY_LOW * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
                 continue;
               }
 
@@ -790,19 +902,41 @@ export function GrooveSystem({
               const len = Math.max(DRIFT_LENGTH_RANGE[0], s.dynamicLength);
               const cycle = ((step - effectivePhase) % len + len) % len;
 
-              // Hold subdivision: holding at medium+ energy fires freely on every beat
-              const isHolding = s.holdStart !== null && !s.dragging;
-              const holdSubdivide =
-                isHolding && s.energy >= HOLD_SUBDIVIDE_THRESHOLD && step % 2 === 0;
+              // Hold subdivision: pressure while holding can briefly increase subdivision.
+              const holdSubdivide = isHolding &&
+                s.energy >= HOLD_SUBDIVIDE_THRESHOLD &&
+                (step % 2 === 0 || (step % 2 === 1 && s.energy > 0.74 && Math.random() < 0.33));
 
               if (
                 (shouldFire(cycle, len, s.energy, s.memoryAvg) || holdSubdivide) &&
                 s.lastStep !== step
               ) {
+                if (triggersThisStep >= stepTriggerCap) {
+                  s.memoryAvg *= 1 - 1 / MEMORY_TC;
+                  continue;
+                }
+                const crowded = activeAgentCount >= 6;
+                if (
+                  crowded &&
+                  ((agent.layerPriority === 2 && triggersThisStep >= 2) ||
+                    (agent.layerPriority === 1 && triggersThisStep >= 3))
+                ) {
+                  s.memoryAvg *= 1 - 1 / MEMORY_TC;
+                  continue;
+                }
                 const swing = step % 2 === 1 ? SWING_LATE * STEP_SECONDS : 0;
                 const when = clockStartRef.current! + step * STEP_SECONDS + swing;
                 const output = compressorRef.current ?? audioCtx.destination;
-                agent.playFn(audioCtx, when, output, reverbRef.current);
+                triggerDynamicHit(
+                  agent,
+                  audioCtx,
+                  when,
+                  output,
+                  reverbRef.current,
+                  s.energy,
+                  triggersThisStep,
+                  activeAgentCount
+                );
                 s.pulseUntil = performance.now() + 220;
                 s.lastStep = step;
                 firedThisStep[i] = true;
@@ -811,8 +945,11 @@ export function GrooveSystem({
                   s.x, s.y, 220 + i * 55, hexToRgb(agent.color), 180
                 );
 
-                // Emergent ghost / echo note at high energy
-                if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < GHOST_CHANCE) {
+                // Emergent ghost / echo note at high intensity, suppressed in busy moments.
+                const ghostChance = GHOST_CHANCE *
+                  (activeAgentCount >= 6 ? 0.55 : 1) *
+                  Math.max(0, (s.energy - GHOST_ENERGY_THRESHOLD) / (1 - GHOST_ENERGY_THRESHOLD));
+                if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < ghostChance) {
                   scheduleGhost(agent, audioCtx, when, output, reverbRef.current);
                 }
 
@@ -823,10 +960,6 @@ export function GrooveSystem({
                 s.memoryAvg *= 1 - 1 / MEMORY_TC;
               }
 
-              // Non-linear, energy-state-dependent decay
-              const decayRate =
-                s.energy > 0.65 ? DECAY_HIGH : s.energy > 0.30 ? DECAY_MID : DECAY_LOW;
-              s.energy *= decayRate * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
             }
 
             // Inter-agent influence: ring neighbours receive a small energy nudge
@@ -840,6 +973,10 @@ export function GrooveSystem({
             for (let i = 0; i < states.length; i++) {
               if (states[i].pendingInfluence > 0) {
                 states[i].energy = Math.min(1, states[i].energy + states[i].pendingInfluence);
+                states[i].releaseStartIntensity = Math.min(
+                  1,
+                  Math.max(states[i].releaseStartIntensity, states[i].energy)
+                );
                 states[i].pendingInfluence = 0;
               }
             }
@@ -854,7 +991,9 @@ export function GrooveSystem({
 
         // Hold: accumulate energy and slowly phase-shift while pointer is held (not dragging)
         if (s.holdStart !== null && !s.dragging) {
-          s.energy = Math.min(1, s.energy + HOLD_RATE);
+          s.energy = Math.min(1, s.energy + HOLD_INTENSITY_PER_SECOND * deltaSeconds);
+          s.releaseStartIntensity = Math.max(s.releaseStartIntensity, s.energy);
+          s.releaseAgeSteps = 0;
           // Frame-rate-independent phase shift accumulation
           s.holdPhaseAccum += HOLD_PHASE_RATE * deltaSeconds;
         }
@@ -1016,10 +1155,20 @@ export function GrooveSystem({
           // Inter-agent influence
           pendingInfluence: 0,
           // Memory / drift — stagger initial drift timers so agents don't all drift at once
-          memoryAvg: 0,
-          driftTimer: DRIFT_STEPS_MIN +
-            Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN)),
-        }));
+            memoryAvg: 0,
+            driftTimer: DRIFT_STEPS_MIN +
+              Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN)),
+            releaseAgeSteps: 0,
+            releaseCommitSteps: Math.max(
+              1,
+              Math.round(RELEASE_COMMIT_MIN_SECONDS / STEP_SECONDS)
+            ),
+            releaseDecaySteps: Math.max(
+              1,
+              Math.round(RELEASE_LIFETIME_MIN_SECONDS / STEP_SECONDS)
+            ),
+            releaseStartIntensity: 0,
+          }));
       } else {
         // Reposition rest points, preserving current spring displacement
         positions.forEach((pos, i) => {
