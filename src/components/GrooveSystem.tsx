@@ -18,9 +18,35 @@ const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 // ── Energy ────────────────────────────────────────────────────────────────────
 const ENERGY_THRESHOLD = 0.12;
 const HOLD_RATE = 0.008; // energy gained per animation frame while holding
-const DECAY_PER_STEP = 0.88; // energy multiplier after each clock step
 const MAX_TRIGGERS_PER_STEP = 3;
 const TAP_ENERGY_BOOST = 0.5; // energy added to an agent on a quick tap
+
+// ── Interaction influence ─────────────────────────────────────────────────────
+const HOLD_PHASE_RATE = 0.30;         // phase steps shifted per second while holding
+const HOLD_SUBDIVIDE_THRESHOLD = 0.45; // energy above which hold triggers freely on even steps
+
+// ── Non-linear decay ──────────────────────────────────────────────────────────
+const DECAY_HIGH  = 0.84;  // fast decay when energy > 0.65
+const DECAY_MID   = 0.88;  // normal decay 0.30 – 0.65
+const DECAY_LOW   = 0.94;  // slow "sustain" decay when energy < 0.30
+const DECAY_JITTER = 0.03; // ±random variance each step
+
+// ── Inter-agent influence ─────────────────────────────────────────────────────
+const INTER_AGENT_NUDGE = 0.04; // energy added to ring-neighbours per fire event
+
+// ── Ghost / echo notes ────────────────────────────────────────────────────────
+const GHOST_ENERGY_THRESHOLD = 0.72; // minimum energy for a ghost note
+const GHOST_CHANCE = 0.20;           // probability per qualifying fire
+const GHOST_GAIN  = 0.28;            // ghost volume relative to main
+
+// ── Memory ───────────────────────────────────────────────────────────────────
+const MEMORY_TC   = 40;   // leaky-average time constant in steps
+const MEMORY_BIAS = 0.12; // max effective-energy lift from memory
+
+// ── Drift ─────────────────────────────────────────────────────────────────────
+const DRIFT_STEPS_MIN = 40;
+const DRIFT_STEPS_MAX = 96;
+const DRIFT_LENGTH_RANGE: [number, number] = [4, 13];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type PlayFn = (
@@ -54,6 +80,15 @@ interface AgentState {
   pulseUntil: number;       // performance.now() until visual pulse shows
   scheduledTap: boolean;    // pending quantised tap on next step
   lastStep: number;         // last clock step this agent triggered on
+  // Mutable pattern state (mutated by taps, hold, and drift)
+  dynamicLength: number;    // current pattern cycle length (may differ from AgentDef)
+  dynamicPhase: number;     // current phase offset in steps
+  holdPhaseAccum: number;   // fractional phase steps accumulated while held
+  // Inter-agent coupling
+  pendingInfluence: number; // energy nudge queued from ring-neighbour fires
+  // Memory / drift
+  memoryAvg: number;        // leaky-average fire density (0..1)
+  driftTimer: number;       // steps until next spontaneous evolution event
 }
 
 export interface GrooveSystemProps {
@@ -168,25 +203,49 @@ const AGENTS: AgentDef[] = [
 // ── Pattern density logic ─────────────────────────────────────────────────────
 /**
  * Returns true if step `step` (within a cycle of `length`) should fire,
- * given the agent's current energy. Higher energy unlocks denser patterns.
+ * given the agent's current energy and memory bias. Higher energy unlocks
+ * denser patterns; memoryAvg (0..1) adds a small upward nudge so recently
+ * active agents stay slightly warmer.
  *
- *  energy ≥ 0.12  → downbeat only (step 0 always fires, guarded by caller)
- *  energy ≥ 0.25  → + half-note point (step at length/2)
- *  energy ≥ 0.45  → + quarter-note points (length/4, 3*length/4)
- *  energy ≥ 0.65  → + all even steps
- *  energy ≥ 0.80  → + all remaining steps except the last
+ *  eff ≥ 0.12  → downbeat only (step 0 always fires, guarded by caller)
+ *  eff ≥ 0.25  → + half-note point (step at length/2)
+ *  eff ≥ 0.45  → + quarter-note points (length/4, 3*length/4)
+ *  eff ≥ 0.65  → + all even steps
+ *  eff ≥ 0.80  → + all remaining steps except the last
  */
-function shouldFire(step: number, length: number, energy: number): boolean {
+function shouldFire(step: number, length: number, energy: number, memoryAvg: number): boolean {
+  const eff = Math.min(1, energy + memoryAvg * MEMORY_BIAS);
   if (step === 0) return true;
   // Half-note point
-  if (energy >= 0.25 && step * 2 === length) return true;
+  if (eff >= 0.25 && step * 2 === length) return true;
   // Quarter-note points (integer only)
-  if (energy >= 0.45 && (step * 4 === length || step * 4 === length * 3)) return true;
+  if (eff >= 0.45 && (step * 4 === length || step * 4 === length * 3)) return true;
   // All even steps
-  if (energy >= 0.65 && step % 2 === 0) return true;
+  if (eff >= 0.65 && step % 2 === 0) return true;
   // Everything except the last step
-  if (energy >= 0.80 && step < length - 1) return true;
+  if (eff >= 0.80 && step < length - 1) return true;
   return false;
+}
+
+// ── Ghost / echo note helper ──────────────────────────────────────────────────
+/**
+ * Schedules a quieter secondary note half a step after `when`, routed
+ * through an intermediate gain node so the main signal path is untouched.
+ */
+function scheduleGhost(
+  agent: AgentDef,
+  audioCtx: AudioContext,
+  when: number,
+  mainOutput: AudioNode,
+  reverb: ConvolverNode | null
+): void {
+  const ghostGain = audioCtx.createGain();
+  ghostGain.gain.value = GHOST_GAIN;
+  ghostGain.connect(mainOutput);
+  agent.playFn(audioCtx, when + STEP_SECONDS * 0.5, ghostGain, reverb);
+  // Disconnect ghost node after the note has fully decayed (max ~1.5 s after scheduled time)
+  const cleanupMs = Math.max(0, (when - audioCtx.currentTime + 1.5) * 1000);
+  setTimeout(() => { try { ghostGain.disconnect(); } catch { /* ignore */ } }, cleanupMs);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -204,6 +263,7 @@ export function GrooveSystem({
   const lastStepRef = useRef<number>(-1);
   const sizeRef = useRef({ w: 0, h: 0 });
   const rafRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number | null>(null); // performance.now() of previous frame
 
   // ── Rest-position layout ────────────────────────────────────────────────────
   const computeRestPositions = useCallback((w: number, h: number) => {
@@ -307,10 +367,22 @@ export function GrooveSystem({
         s.holdStart !== null ? performance.now() - s.holdStart : 0;
       const wasDragging = s.dragging;
 
-      // Tap: short press with no significant drag → schedule quantised note
+      // Tap: short press with no significant drag → schedule quantised note + small mutation
       if (!wasDragging && holdDuration < 280) {
         s.scheduledTap = true;
         s.energy = Math.max(s.energy, TAP_ENERGY_BOOST);
+        // Introduce a small random pattern mutation: length ±1, phase ±1, or both
+        const rng = Math.random();
+        if (rng < 0.4) {
+          const delta = Math.random() < 0.5 ? 1 : -1;
+          s.dynamicLength = Math.max(
+            DRIFT_LENGTH_RANGE[0],
+            Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + delta)
+          );
+        } else if (rng < 0.8) {
+          s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
+        }
+        // (remaining ~20%: no mutation this tap — preserves the current feel)
       }
 
       // Release drag: store displacement as energy and kick spring
@@ -320,6 +392,10 @@ export function GrooveSystem({
         s.vx = (s.restX - s.x) * 0.05;
         s.vy = (s.restY - s.y) * 0.05;
       }
+
+      // Persist any phase shift accumulated during this hold gesture
+      s.dynamicPhase += Math.round(s.holdPhaseAccum);
+      s.holdPhaseAccum = 0;
 
       s.dragging = false;
       s.pointerId = null;
@@ -334,6 +410,12 @@ export function GrooveSystem({
   useEffect(() => {
     const loop = (now: number) => {
       rafRef.current = requestAnimationFrame(loop);
+
+      // Frame delta for frame-rate-independent accumulations
+      const deltaSeconds = lastFrameTimeRef.current !== null
+        ? Math.min((now - lastFrameTimeRef.current) / 1000, 0.1) // cap at 100 ms to handle tab-hidden spikes
+        : 1 / 60;
+      lastFrameTimeRef.current = now;
 
       const canvas = canvasRef.current;
       const canvasCtx = canvas?.getContext("2d");
@@ -352,6 +434,9 @@ export function GrooveSystem({
           for (let step = lastStepRef.current + 1; step <= currentStep; step++) {
             let triggersThisStep = 0;
 
+            // Track which agents fire this step (for inter-agent influence)
+            const firedThisStep = new Array<boolean>(states.length).fill(false);
+
             // User-scheduled taps have priority
             for (let i = 0; i < states.length; i++) {
               if (triggersThisStep >= MAX_TRIGGERS_PER_STEP) break;
@@ -365,6 +450,7 @@ export function GrooveSystem({
               agent.playFn(audioCtx, when, output, reverbRef.current);
               s.pulseUntil = performance.now() + 220;
               s.scheduledTap = false;
+              firedThisStep[i] = true;
               triggersThisStep++;
               rainbowFieldRef.current?.pulse(
                 s.x, s.y, 220 + i * 55, hexToRgb(agent.color), 180
@@ -375,20 +461,43 @@ export function GrooveSystem({
             for (let i = 0; i < states.length; i++) {
               if (triggersThisStep >= MAX_TRIGGERS_PER_STEP) break;
               const s = states[i];
+              const agent = AGENTS[i];
+
+              // Spontaneous slow drift: evolve pattern length or phase
+              if (--s.driftTimer <= 0) {
+                s.driftTimer = DRIFT_STEPS_MIN +
+                  Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN));
+                if (Math.random() < 0.5) {
+                  const delta = Math.random() < 0.5 ? 1 : -1;
+                  s.dynamicLength = Math.max(
+                    DRIFT_LENGTH_RANGE[0],
+                    Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + delta)
+                  );
+                } else {
+                  s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
+                }
+              }
 
               if (s.energy < ENERGY_THRESHOLD) {
-                s.energy *= 0.98; // drain residual slowly
+                // Memory: no fire
+                s.memoryAvg *= 1 - 1 / MEMORY_TC;
+                // Slow non-linear drain below threshold
+                s.energy *= DECAY_LOW * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
                 continue;
               }
 
-              const agent = AGENTS[i];
-              const cycle =
-                ((step - agent.phaseOffset) % agent.patternLength +
-                  agent.patternLength) %
-                agent.patternLength;
+              // Phase includes any shift accumulated during a hold gesture
+              const effectivePhase = s.dynamicPhase + Math.round(s.holdPhaseAccum);
+              const len = Math.max(DRIFT_LENGTH_RANGE[0], s.dynamicLength);
+              const cycle = ((step - effectivePhase) % len + len) % len;
+
+              // Hold subdivision: holding at medium+ energy fires freely on every beat
+              const isHolding = s.holdStart !== null && !s.dragging;
+              const holdSubdivide =
+                isHolding && s.energy >= HOLD_SUBDIVIDE_THRESHOLD && step % 2 === 0;
 
               if (
-                shouldFire(cycle, agent.patternLength, s.energy) &&
+                (shouldFire(cycle, len, s.energy, s.memoryAvg) || holdSubdivide) &&
                 s.lastStep !== step
               ) {
                 const swing = step % 2 === 1 ? SWING_LATE * STEP_SECONDS : 0;
@@ -397,13 +506,43 @@ export function GrooveSystem({
                 agent.playFn(audioCtx, when, output, reverbRef.current);
                 s.pulseUntil = performance.now() + 220;
                 s.lastStep = step;
+                firedThisStep[i] = true;
                 triggersThisStep++;
                 rainbowFieldRef.current?.pulse(
                   s.x, s.y, 220 + i * 55, hexToRgb(agent.color), 180
                 );
+
+                // Emergent ghost / echo note at high energy
+                if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < GHOST_CHANCE) {
+                  scheduleGhost(agent, audioCtx, when, output, reverbRef.current);
+                }
+
+                // Memory: record a fire
+                s.memoryAvg = s.memoryAvg * (1 - 1 / MEMORY_TC) + 1 / MEMORY_TC;
+              } else {
+                // Memory: no fire this step
+                s.memoryAvg *= 1 - 1 / MEMORY_TC;
               }
 
-              s.energy *= DECAY_PER_STEP;
+              // Non-linear, energy-state-dependent decay
+              const decayRate =
+                s.energy > 0.65 ? DECAY_HIGH : s.energy > 0.30 ? DECAY_MID : DECAY_LOW;
+              s.energy *= decayRate * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
+            }
+
+            // Inter-agent influence: ring neighbours receive a small energy nudge
+            for (let i = 0; i < states.length; i++) {
+              if (!firedThisStep[i]) continue;
+              const prev = (i - 1 + states.length) % states.length;
+              const next = (i + 1) % states.length;
+              states[prev].pendingInfluence += INTER_AGENT_NUDGE;
+              states[next].pendingInfluence += INTER_AGENT_NUDGE;
+            }
+            for (let i = 0; i < states.length; i++) {
+              if (states[i].pendingInfluence > 0) {
+                states[i].energy = Math.min(1, states[i].energy + states[i].pendingInfluence);
+                states[i].pendingInfluence = 0;
+              }
             }
           }
           lastStepRef.current = currentStep;
@@ -414,9 +553,11 @@ export function GrooveSystem({
       for (let i = 0; i < states.length; i++) {
         const s = states[i];
 
-        // Hold: accumulate energy while pointer is held (not dragging)
+        // Hold: accumulate energy and slowly phase-shift while pointer is held (not dragging)
         if (s.holdStart !== null && !s.dragging) {
           s.energy = Math.min(1, s.energy + HOLD_RATE);
+          // Frame-rate-independent phase shift accumulation
+          s.holdPhaseAccum += HOLD_PHASE_RATE * deltaSeconds;
         }
 
         // Spring pull back toward rest position
@@ -549,7 +690,7 @@ export function GrooveSystem({
 
       if (states.length === 0) {
         // First initialisation
-        agentStateRef.current = positions.map((pos) => ({
+        agentStateRef.current = positions.map((pos, i) => ({
           x: pos.x,
           y: pos.y,
           vx: 0,
@@ -563,6 +704,16 @@ export function GrooveSystem({
           pulseUntil: 0,
           scheduledTap: false,
           lastStep: -1,
+          // Mutable pattern state — seeded from AgentDef
+          dynamicLength: AGENTS[i].patternLength,
+          dynamicPhase: AGENTS[i].phaseOffset,
+          holdPhaseAccum: 0,
+          // Inter-agent influence
+          pendingInfluence: 0,
+          // Memory / drift — stagger initial drift timers so agents don't all drift at once
+          memoryAvg: 0,
+          driftTimer: DRIFT_STEPS_MIN +
+            Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN)),
         }));
       } else {
         // Reposition rest points, preserving current spring displacement
