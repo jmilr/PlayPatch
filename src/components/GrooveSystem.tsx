@@ -45,6 +45,15 @@ const INTER_AGENT_NUDGE = 0.026;
 const GHOST_ENERGY_THRESHOLD = 0.66;
 const GHOST_CHANCE = 0.08;
 const GHOST_GAIN = 0.22;
+const GHOST_CROWDED_AGENT_THRESHOLD = 6;
+const GHOST_CROWDED_MULTIPLIER = 0.55;
+
+// ── Mix management ─────────────────────────────────────────────────────────────
+const CROWD_SOFT_START = 4;
+const CROWD_SOFT_PER_AGENT = 0.065;
+const CROWD_SOFT_MAX_REDUCTION = 0.46;
+const HIT_INTENSITY_BASE = 0.34;
+const HIT_INTENSITY_SCALE = 0.78;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
@@ -75,7 +84,7 @@ function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuf
 
 const noiseBufferCache = new WeakMap<AudioContext, AudioBuffer>();
 
-function getPercNoiseBuffer(ctx: AudioContext): AudioBuffer {
+function getPercussionNoiseBuffer(ctx: AudioContext): AudioBuffer {
   const cached = noiseBufferCache.get(ctx);
   if (cached) return cached;
   const created = createNoiseBuffer(ctx, 0.6);
@@ -214,7 +223,7 @@ function makeHandDrum(
     bodyGain.connect(mix);
 
     const noise = ctx.createBufferSource();
-    noise.buffer = getPercNoiseBuffer(ctx);
+    noise.buffer = getPercussionNoiseBuffer(ctx);
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = "bandpass";
     noiseFilter.frequency.setValueAtTime(bodyFreq * 5.2, when);
@@ -347,7 +356,7 @@ function makeKalimba(freq: number): PlayFn {
 function makeSoftShaker(centerHz: number, peak: number): PlayFn {
   return (ctx, when, output, reverb) => {
     const noise = ctx.createBufferSource();
-    noise.buffer = getPercNoiseBuffer(ctx);
+    noise.buffer = getPercussionNoiseBuffer(ctx);
     const filter = ctx.createBiquadFilter();
     filter.type = "bandpass";
     filter.frequency.setValueAtTime(centerHz, when);
@@ -559,9 +568,12 @@ function triggerDynamicHit(
   activeAgentCount: number
 ): void {
   const level = ctx.createGain();
-  const crowdSoft = 1 - Math.min(0.46, Math.max(0, activeAgentCount - 4) * 0.065);
+  const crowdSoft = 1 - Math.min(
+    CROWD_SOFT_MAX_REDUCTION,
+    Math.max(0, activeAgentCount - CROWD_SOFT_START) * CROWD_SOFT_PER_AGENT
+  );
   const overlapSoft = 1 / Math.sqrt(1 + overlapIndex * 0.9);
-  const intensitySoft = 0.34 + intensity * 0.78;
+  const intensitySoft = HIT_INTENSITY_BASE + intensity * HIT_INTENSITY_SCALE;
   level.gain.value = Math.max(0.08, crowdSoft * overlapSoft * intensitySoft);
   level.connect(output);
   agent.playFn(ctx, when, level, reverb);
@@ -887,6 +899,7 @@ export function GrooveSystem({
 
               const isHolding = s.holdStart !== null && !s.dragging;
               if (!isHolding) {
+                // Release envelope advances only after release. While held, pressure sustains intensity.
                 s.releaseAgeSteps += 1;
                 s.energy = releaseEnvelopeValue(s);
               }
@@ -947,7 +960,7 @@ export function GrooveSystem({
 
                 // Emergent ghost / echo note at high intensity, suppressed in busy moments.
                 const ghostChance = GHOST_CHANCE *
-                  (activeAgentCount >= 6 ? 0.55 : 1) *
+                  (activeAgentCount >= GHOST_CROWDED_AGENT_THRESHOLD ? GHOST_CROWDED_MULTIPLIER : 1) *
                   Math.max(0, (s.energy - GHOST_ENERGY_THRESHOLD) / (1 - GHOST_ENERGY_THRESHOLD));
                 if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < ghostChance) {
                   scheduleGhost(agent, audioCtx, when, output, reverbRef.current);
