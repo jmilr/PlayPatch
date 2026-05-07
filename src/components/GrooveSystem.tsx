@@ -11,7 +11,9 @@ const SWING_LATE = 0.035; // fraction of a step that odd steps are delayed
 // ── Physics ───────────────────────────────────────────────────────────────────
 const SPRING_K = 0.16;
 const SPRING_DAMPING = 0.78;
-const AGENT_RADIUS = 40;
+const BASE_AGENT_RADIUS = 40;
+const MIN_AGENT_RADIUS = 18;
+const MAX_AGENT_RADIUS = 46;
 const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
@@ -55,6 +57,18 @@ type PlayFn = (
   output: AudioNode,
   reverb: ConvolverNode | null
 ) => void;
+
+const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
+
+function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuffer {
+  const length = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  return buffer;
+}
 
 interface AgentDef {
   readonly id: number;
@@ -149,6 +163,191 @@ function makeTone(
   };
 }
 
+function makeSoftCrash(
+  bodyFreq: number,
+  bodyDecay: number,
+  noiseCenterHz: number,
+  peak: number
+): PlayFn {
+  return (ctx, when, output, reverb) => {
+    const mix = ctx.createGain();
+    mix.gain.value = 1;
+    mix.connect(output);
+
+    const send = ctx.createGain();
+    send.gain.value = 0.42;
+    mix.connect(send);
+    if (reverb) send.connect(reverb);
+
+    const bodyOsc = ctx.createOscillator();
+    bodyOsc.type = "triangle";
+    bodyOsc.frequency.setValueAtTime(bodyFreq, when);
+    bodyOsc.frequency.exponentialRampToValueAtTime(Math.max(55, bodyFreq * 0.52), when + bodyDecay);
+    const bodyFilter = ctx.createBiquadFilter();
+    bodyFilter.type = "lowpass";
+    bodyFilter.frequency.setValueAtTime(1800, when);
+    bodyFilter.frequency.exponentialRampToValueAtTime(460, when + bodyDecay);
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(0.0001, when);
+    bodyGain.gain.linearRampToValueAtTime(peak * 0.55, when + 0.012);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay);
+
+    bodyOsc.connect(bodyFilter);
+    bodyFilter.connect(bodyGain);
+    bodyGain.connect(mix);
+
+    const noise = ctx.createBufferSource();
+    noise.buffer = createNoiseBuffer(ctx, 1.1);
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.setValueAtTime(noiseCenterHz, when);
+    noiseFilter.Q.value = 0.85;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.0001, when);
+    noiseGain.gain.linearRampToValueAtTime(peak, when + 0.008);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay * 1.35);
+
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(mix);
+
+    const stopAt = when + bodyDecay * 1.35 + 0.1;
+    bodyOsc.start(when);
+    bodyOsc.stop(stopAt);
+    noise.start(when);
+    noise.stop(stopAt);
+
+    bodyOsc.onended = () => {
+      try {
+        bodyOsc.disconnect();
+        bodyFilter.disconnect();
+        bodyGain.disconnect();
+      } catch { /* ignore */ }
+    };
+    noise.onended = () => {
+      try {
+        noise.disconnect();
+        noiseFilter.disconnect();
+        noiseGain.disconnect();
+        send.disconnect();
+        mix.disconnect();
+      } catch { /* ignore */ }
+    };
+  };
+}
+
+function makeSoftBell(freq: number): PlayFn {
+  return (ctx, when, output, reverb) => {
+    const partials: Array<{ mul: number; gain: number; decay: number }> = [
+      { mul: 1, gain: 0.14, decay: 1.2 },
+      { mul: 2.01, gain: 0.08, decay: 0.9 },
+      { mul: 3.18, gain: 0.05, decay: 0.7 },
+    ];
+
+    const send = ctx.createGain();
+    send.gain.value = 0.58;
+    if (reverb) send.connect(reverb);
+
+    partials.forEach(({ mul, gain, decay }) => {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * mul, when);
+
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, when);
+      amp.gain.linearRampToValueAtTime(gain, when + 0.01);
+      amp.gain.exponentialRampToValueAtTime(0.0001, when + decay);
+
+      osc.connect(amp);
+      amp.connect(output);
+      amp.connect(send);
+
+      const stopAt = when + decay + 0.12;
+      osc.start(when);
+      osc.stop(stopAt);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          amp.disconnect();
+        } catch { /* ignore */ }
+      };
+    });
+
+    const releaseMs = 1800;
+    setTimeout(() => { try { send.disconnect(); } catch { /* ignore */ } }, releaseMs);
+  };
+}
+
+function makeWarmGuitarStrum(rootHz: number): PlayFn {
+  const chordSemitoneSets = [
+    [0, 4, 7, 12],   // A
+    [5, 9, 12, 16],  // D
+    [7, 11, 14, 19], // E
+    [9, 12, 16, 21], // F#m
+    [4, 7, 11, 16],  // C#m
+    [2, 5, 9, 14],   // Bm
+  ];
+
+  return (ctx, when, output, reverb) => {
+    const chord = chordSemitoneSets[Math.floor(Math.random() * chordSemitoneSets.length)];
+    const reverbSend = ctx.createGain();
+    reverbSend.gain.value = 0.5;
+    if (reverb) reverbSend.connect(reverb);
+
+    chord.forEach((semi, idx) => {
+      const start = when + idx * 0.035 + randomInRange(0, 0.01);
+      const freq = rootHz * Math.pow(2, semi / 12);
+
+      const osc = ctx.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, start);
+      osc.detune.setValueAtTime(randomInRange(-5, 5), start);
+
+      const harmonic = ctx.createOscillator();
+      harmonic.type = "sine";
+      harmonic.frequency.setValueAtTime(freq * 2, start);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(2400, start);
+      filter.frequency.exponentialRampToValueAtTime(720, start + 1.8);
+      filter.Q.value = 1.1;
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(0.11, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.8);
+
+      const harmonicGain = ctx.createGain();
+      harmonicGain.gain.value = 0.33;
+
+      osc.connect(filter);
+      harmonic.connect(harmonicGain);
+      harmonicGain.connect(filter);
+      filter.connect(gain);
+      gain.connect(output);
+      gain.connect(reverbSend);
+
+      const stopAt = start + 1.95;
+      osc.start(start);
+      harmonic.start(start);
+      osc.stop(stopAt);
+      harmonic.stop(stopAt);
+      harmonic.onended = () => {
+        try {
+          osc.disconnect();
+          harmonic.disconnect();
+          harmonicGain.disconnect();
+          filter.disconnect();
+          gain.disconnect();
+        } catch { /* ignore */ }
+      };
+    });
+
+    setTimeout(() => { try { reverbSend.disconnect(); } catch { /* ignore */ } }, 2300);
+  };
+}
+
 // ── Agent definitions ─────────────────────────────────────────────────────────
 // Frequencies form an A-major pentatonic set (A2–A4) — all consonant together.
 // Pattern lengths are co-prime enough to create evolving polyrhythm.
@@ -205,7 +404,7 @@ const AGENTS: AgentDef[] = [
     color: "#ff8a65",
     patternLength: 10,
     phaseOffset: 3,
-    playFn: makeTone(246.942, "triangle", 520, 0.08, 0.70, 0.17),
+    playFn: makeSoftCrash(196, 0.85, 760, 0.13),
   },
   {
     id: 6,
@@ -214,7 +413,7 @@ const AGENTS: AgentDef[] = [
     color: "#ffb74d",
     patternLength: 7,
     phaseOffset: 1,
-    playFn: makeTone(369.994, "sine", 720, 0.07, 0.62, 0.16),
+    playFn: makeSoftCrash(246.942, 0.72, 1280, 0.11),
   },
   {
     id: 7,
@@ -223,7 +422,7 @@ const AGENTS: AgentDef[] = [
     color: "#f4a261",
     patternLength: 9,
     phaseOffset: 4,
-    playFn: makeTone(277.183, "sine", 640, 0.09, 0.78, 0.15),
+    playFn: makeSoftCrash(164.814, 1.05, 980, 0.12),
   },
   {
     id: 8,
@@ -232,7 +431,7 @@ const AGENTS: AgentDef[] = [
     color: "#c084fc",
     patternLength: 11,
     phaseOffset: 5,
-    playFn: makeTone(184.997, "triangle", 500, 0.10, 0.82, 0.18),
+    playFn: makeSoftBell(659.255),
   },
   {
     id: 9,
@@ -241,7 +440,7 @@ const AGENTS: AgentDef[] = [
     color: "#f59e0b",
     patternLength: 5,
     phaseOffset: 2,
-    playFn: makeTone(554.365, "sine", 900, 0.06, 0.58, 0.14),
+    playFn: makeWarmGuitarStrum(110),
   },
 ];
 
@@ -306,55 +505,65 @@ export function GrooveSystem({
   const agentStateRef = useRef<AgentState[]>([]);
   const clockStartRef = useRef<number | null>(null); // AudioContext time when clock started
   const lastStepRef = useRef<number>(-1);
-  const sizeRef = useRef({ w: 0, h: 0 });
+  const sizeRef = useRef({ w: 0, h: 0, radius: BASE_AGENT_RADIUS });
   const rafRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number | null>(null); // performance.now() of previous frame
 
   // ── Rest-position layout ────────────────────────────────────────────────────
-  const computeRestPositions = useCallback((w: number, h: number) => {
-    const pad = AGENT_RADIUS + 18;
-    const left = pad;
-    const right = Math.max(left, w - pad);
-    const top = pad;
-    const bottom = Math.max(top, h - pad);
-
-    const columnCounts = [3, 4, 3];
-    const rowCounts = [3, 4, 3];
-    const isPortrait = h >= w;
-
-    if (isPortrait) {
-      const maxRows = Math.max(...columnCounts);
-      const colStep = (right - left) / (columnCounts.length - 1 || 1);
-      const rowStep = (bottom - top) / (maxRows - 1 || 1);
-      return columnCounts.flatMap((count, col) => {
-        const x = left + col * colStep;
-        const startRow = (maxRows - count) / 2;
-        return Array.from({ length: count }, (_, row) => ({
-          x,
-          y: top + (startRow + row) * rowStep,
-        }));
-      });
+  const computeRestLayout = useCallback((w: number, h: number) => {
+    const count = AGENTS.length;
+    const minPad = 14;
+    const aspect = h > 0 ? w / h : 1;
+    let cols = Math.max(2, Math.round(Math.sqrt(count * Math.max(0.45, aspect))));
+    cols = Math.min(count, cols);
+    let rows = Math.ceil(count / cols);
+    if (h >= w && cols > rows) {
+      [cols, rows] = [rows, cols];
+      rows = Math.ceil(count / cols);
+    }
+    if (w > h && rows > cols) {
+      [cols, rows] = [rows, cols];
+      rows = Math.ceil(count / cols);
     }
 
-    const maxCols = Math.max(...rowCounts);
-    const rowStep = (bottom - top) / (rowCounts.length - 1 || 1);
-    const colStep = (right - left) / (maxCols - 1 || 1);
-    return rowCounts.flatMap((count, row) => {
-      const y = top + row * rowStep;
-      const startCol = (maxCols - count) / 2;
-      return Array.from({ length: count }, (_, col) => ({
-        x: left + (startCol + col) * colStep,
-        y,
-      }));
-    });
+    const usableW = Math.max(1, w - minPad * 2);
+    const usableH = Math.max(1, h - minPad * 2);
+    const cellW = usableW / Math.max(1, cols);
+    const cellH = usableH / Math.max(1, rows);
+    const radius = Math.max(
+      MIN_AGENT_RADIUS,
+      Math.min(
+        MAX_AGENT_RADIUS,
+        BASE_AGENT_RADIUS,
+        cellW * 0.35,
+        (cellH - 20) * 0.5
+      )
+    );
+
+    const positions: Array<{ x: number; y: number }> = [];
+    for (let row = 0; row < rows; row++) {
+      const rowStart = row * cols;
+      const rowCount = Math.max(0, Math.min(cols, count - rowStart));
+      if (rowCount === 0) break;
+      const offset = (cols - rowCount) * 0.5;
+      for (let col = 0; col < rowCount; col++) {
+        positions.push({
+          x: minPad + (offset + col + 0.5) * cellW,
+          y: minPad + (row + 0.5) * cellH,
+        });
+      }
+    }
+
+    return { positions, radius };
   }, []);
 
   // ── Hit test ────────────────────────────────────────────────────────────────
   const hitTest = useCallback((x: number, y: number): number => {
     const states = agentStateRef.current;
+    const r = sizeRef.current.radius;
     for (let i = 0; i < states.length; i++) {
       const s = states[i];
-      if (Math.hypot(x - s.x, y - s.y) <= AGENT_RADIUS + 14) return i;
+      if (Math.hypot(x - s.x, y - s.y) <= r + 12) return i;
     }
     return -1;
   }, []);
@@ -494,7 +703,7 @@ export function GrooveSystem({
       const canvasCtx = canvas?.getContext("2d");
       if (!canvas || !canvasCtx) return;
 
-      const { w, h } = sizeRef.current;
+      const { w, h, radius: baseRadius } = sizeRef.current;
       const states = agentStateRef.current;
       const audioCtx = audioContextRef.current;
 
@@ -647,10 +856,10 @@ export function GrooveSystem({
       // ── 3. Render agents onto canvas ──────────────────────────────────────
       canvasCtx.clearRect(0, 0, w, h);
 
-      const isPortrait = h >= w;
       for (let i = 0; i < AGENTS.length; i++) {
         const agent = AGENTS[i];
         const s = states[i];
+        if (!s) continue;
         const pT = Math.max(0, (s.pulseUntil - now) / 220); // 0..1
 
         canvasCtx.save();
@@ -669,12 +878,12 @@ export function GrooveSystem({
         // Glow proportional to energy + pulse
         const energyVis = Math.max(s.energy, pT * 0.6);
         if (energyVis > 0.04) {
-          const glowR = AGENT_RADIUS + energyVis * 28 + pT * 18;
+          const glowR = baseRadius + energyVis * 28 + pT * 18;
           const alphaHex = Math.round(energyVis * 255)
             .toString(16)
             .padStart(2, "0");
           const grd = canvasCtx.createRadialGradient(
-            s.x, s.y, AGENT_RADIUS * 0.5,
+            s.x, s.y, baseRadius * 0.5,
             s.x, s.y, glowR
           );
           grd.addColorStop(0, `${agent.color}${alphaHex}`);
@@ -687,7 +896,7 @@ export function GrooveSystem({
 
         // Main circle
         const scale = 1 + pT * 0.18;
-        const r = AGENT_RADIUS * scale;
+        const r = baseRadius * scale;
         canvasCtx.beginPath();
         canvasCtx.arc(s.x, s.y, r, 0, 2 * Math.PI);
         canvasCtx.fillStyle = `${agent.color}cc`;
@@ -700,31 +909,25 @@ export function GrooveSystem({
         if (s.energy > 0.02) {
           const arcEnd = -Math.PI / 2 + s.energy * 2 * Math.PI;
           canvasCtx.beginPath();
-          canvasCtx.arc(s.x, s.y, AGENT_RADIUS + 9, -Math.PI / 2, arcEnd);
+          canvasCtx.arc(s.x, s.y, baseRadius + 9, -Math.PI / 2, arcEnd);
           canvasCtx.strokeStyle = `${agent.color}ee`;
           canvasCtx.lineWidth = 4;
           canvasCtx.lineCap = "round";
           canvasCtx.stroke();
         }
 
-        // Emoji + label reorient with device orientation
+        // Emoji + label
         const emojiSize = Math.round(r * 0.7);
         canvasCtx.font = `${emojiSize}px serif`;
         canvasCtx.fillStyle = "rgba(255,255,255,0.96)";
         canvasCtx.textAlign = "center";
         canvasCtx.textBaseline = "middle";
         canvasCtx.fillText(agent.emoji, s.x, s.y);
-        canvasCtx.font = "bold 11px system-ui, sans-serif";
+        canvasCtx.font = `600 ${Math.max(10, Math.round(baseRadius * 0.28))}px system-ui, sans-serif`;
         canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
-        if (isPortrait) {
-          canvasCtx.textAlign = "center";
-          canvasCtx.textBaseline = "top";
-          canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
-        } else {
-          canvasCtx.textAlign = "left";
-          canvasCtx.textBaseline = "middle";
-          canvasCtx.fillText(agent.label, s.x + r + 10, s.y);
-        }
+        canvasCtx.textAlign = "center";
+        canvasCtx.textBaseline = "top";
+        canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
 
         canvasCtx.restore();
       }
@@ -758,13 +961,20 @@ export function GrooveSystem({
     const resize = () => {
       const rect = container.getBoundingClientRect();
       const { width: w, height: h } = rect;
-      canvas.width = w;
-      canvas.height = h;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
-      sizeRef.current = { w, h };
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = true;
+      }
 
-      const positions = computeRestPositions(w, h);
+      const { positions, radius } = computeRestLayout(w, h);
+      sizeRef.current = { w, h, radius };
       const states = agentStateRef.current;
 
       if (states.length === 0) {
@@ -813,7 +1023,7 @@ export function GrooveSystem({
     const observer = new ResizeObserver(resize);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [computeRestPositions]);
+  }, [computeRestLayout]);
 
   return (
     <div
