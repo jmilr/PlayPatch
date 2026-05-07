@@ -19,6 +19,7 @@ const CELL_WIDTH_RADIUS_FACTOR = 0.35;
 const CELL_HEIGHT_LABEL_PADDING = 20;
 const CELL_HEIGHT_RADIUS_FACTOR = 0.5;
 const HIT_TEST_PADDING = 12;
+const LABEL_FONT_SIZE_FACTOR = 0.28;
 const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
@@ -938,7 +939,7 @@ export function GrooveSystem({
         canvasCtx.textAlign = "center";
         canvasCtx.textBaseline = "middle";
         canvasCtx.fillText(agent.emoji, s.x, s.y);
-        canvasCtx.font = `600 ${Math.max(10, Math.round(baseRadius * 0.28))}px system-ui, sans-serif`;
+        canvasCtx.font = `600 ${Math.max(10, Math.round(baseRadius * LABEL_FONT_SIZE_FACTOR))}px system-ui, sans-serif`;
         canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
         canvasCtx.textAlign = "center";
         canvasCtx.textBaseline = "top";
@@ -985,7 +986,7 @@ export function GrooveSystem({
       if (ctx) {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.scale(dpr, dpr);
-        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingEnabled = false;
       }
 
       const { positions, radius } = computeRestLayout(w, h);
