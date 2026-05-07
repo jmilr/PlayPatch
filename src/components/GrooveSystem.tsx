@@ -280,13 +280,14 @@ function makeSoftBell(freq: number): PlayFn {
 }
 
 function makeWarmGuitarStrum(rootHz: number): PlayFn {
+  // Warm A-major key voicings (semitone offsets from the root pitch).
   const chordSemitoneSets = [
-    [0, 4, 7, 14],   // Aadd9
-    [5, 9, 12, 16],  // Dmaj7(no5)
-    [7, 11, 14, 19], // E triad + octave
-    [9, 12, 16, 19], // F#m7
-    [4, 7, 11, 16],  // C#m7(no7)
-    [2, 5, 9, 14],   // Bm7(no7)
+    [0, 4, 7, 14],
+    [5, 9, 12, 16],
+    [7, 11, 14, 19],
+    [9, 12, 16, 19],
+    [4, 7, 11, 16],
+    [2, 5, 9, 14],
   ];
 
   return (ctx, when, output, reverb) => {
@@ -860,7 +861,6 @@ export function GrooveSystem({
       for (let i = 0; i < AGENTS.length; i++) {
         const agent = AGENTS[i];
         const s = states[i];
-        if (!s) continue;
         const pT = Math.max(0, (s.pulseUntil - now) / 220); // 0..1
 
         canvasCtx.save();
