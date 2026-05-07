@@ -14,6 +14,10 @@ const SPRING_DAMPING = 0.78;
 const BASE_AGENT_RADIUS = 40;
 const MIN_AGENT_RADIUS = 18;
 const MAX_AGENT_RADIUS = 46;
+const MIN_LAYOUT_ASPECT = 0.45;
+const CELL_WIDTH_RADIUS_FACTOR = 0.35;
+const CELL_HEIGHT_LABEL_PADDING = 20;
+const CELL_HEIGHT_RADIUS_FACTOR = 0.5;
 const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
@@ -280,7 +284,7 @@ function makeSoftBell(freq: number): PlayFn {
 }
 
 function makeWarmGuitarStrum(rootHz: number): PlayFn {
-  // Warm A-major key voicings (semitone offsets from the root pitch).
+  // Warm major-key voicings (semitone offsets relative to the provided root pitch).
   const chordSemitoneSets = [
     [0, 4, 7, 14],
     [5, 9, 12, 16],
@@ -516,7 +520,7 @@ export function GrooveSystem({
     const count = AGENTS.length;
     const minPad = 14;
     const aspect = h > 0 ? w / h : 1;
-    let cols = Math.max(2, Math.round(Math.sqrt(count * Math.max(0.45, aspect))));
+    let cols = Math.max(2, Math.round(Math.sqrt(count * Math.max(MIN_LAYOUT_ASPECT, aspect))));
     cols = Math.min(count, cols);
     let rows = Math.ceil(count / cols);
     if (h >= w && cols > rows) {
@@ -537,8 +541,8 @@ export function GrooveSystem({
       Math.min(
         MAX_AGENT_RADIUS,
         BASE_AGENT_RADIUS,
-        cellW * 0.35,
-        (cellH - 20) * 0.5
+        cellW * CELL_WIDTH_RADIUS_FACTOR,
+        (cellH - CELL_HEIGHT_LABEL_PADDING) * CELL_HEIGHT_RADIUS_FACTOR
       )
     );
 
