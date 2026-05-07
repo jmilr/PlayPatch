@@ -56,6 +56,8 @@ const CROWD_SOFT_PER_AGENT = 0.065;
 const CROWD_SOFT_MAX_REDUCTION = 0.46;
 const HIT_INTENSITY_BASE = 0.34;
 const HIT_INTENSITY_SCALE = 0.78;
+const MIN_GAIN_VALUE = 0.0001;
+const MIN_DYNAMIC_GAIN = 0.08;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
@@ -165,9 +167,9 @@ function makeTone(
     );
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     gain.gain.linearRampToValueAtTime(peak, when + attack);
-    gain.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay);
+    gain.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + attack + decay);
 
     const send = ctx.createGain();
     send.gain.value = 0.4;
@@ -216,9 +218,9 @@ function makeHandDrum(
     bodyFilter.frequency.setValueAtTime(1150, when);
     bodyFilter.frequency.exponentialRampToValueAtTime(360, when + bodyDecay);
     const bodyGain = ctx.createGain();
-    bodyGain.gain.setValueAtTime(0.0001, when);
+    bodyGain.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     bodyGain.gain.linearRampToValueAtTime(peak * 0.68, when + 0.018);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay);
+    bodyGain.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + bodyDecay);
 
     bodyOsc.connect(bodyFilter);
     bodyFilter.connect(bodyGain);
@@ -231,9 +233,9 @@ function makeHandDrum(
     noiseFilter.frequency.setValueAtTime(bodyFreq * 5.2, when);
     noiseFilter.Q.value = 0.7;
     const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.0001, when);
+    noiseGain.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     noiseGain.gain.linearRampToValueAtTime(peak * 0.26, when + 0.014);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay * 0.9);
+    noiseGain.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + bodyDecay * 0.9);
 
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
@@ -277,9 +279,9 @@ function makeWoodBlock(freq: number, peak: number): PlayFn {
     band.Q.value = 1.4;
 
     const amp = ctx.createGain();
-    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     amp.gain.linearRampToValueAtTime(peak, when + 0.008);
-    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.24);
+    amp.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + 0.24);
 
     const send = ctx.createGain();
     send.gain.value = 0.22;
@@ -320,9 +322,9 @@ function makeKalimba(freq: number): PlayFn {
     filter.frequency.exponentialRampToValueAtTime(540, when + 0.75);
 
     const amp = ctx.createGain();
-    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     amp.gain.linearRampToValueAtTime(0.14, when + 0.012);
-    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.72);
+    amp.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + 0.72);
 
     const tineMix = ctx.createGain();
     tineMix.gain.value = 0.22;
@@ -364,9 +366,9 @@ function makeSoftShaker(centerHz: number, peak: number): PlayFn {
     filter.frequency.setValueAtTime(centerHz, when);
     filter.Q.value = 0.65;
     const amp = ctx.createGain();
-    amp.gain.setValueAtTime(0.0001, when);
+    amp.gain.setValueAtTime(MIN_GAIN_VALUE, when);
     amp.gain.linearRampToValueAtTime(peak, when + 0.005);
-    amp.gain.exponentialRampToValueAtTime(0.0001, when + 0.16);
+    amp.gain.exponentialRampToValueAtTime(MIN_GAIN_VALUE, when + 0.16);
 
     const send = ctx.createGain();
     send.gain.value = 0.18;
@@ -534,15 +536,21 @@ function randRange(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
 
+function createReleaseTiming(): { commitSteps: number; decaySteps: number } {
+  return {
+    commitSteps: Math.max(
+      1,
+      Math.round(randRange(RELEASE_COMMIT_MIN_SECONDS, RELEASE_COMMIT_MAX_SECONDS) / STEP_SECONDS)
+    ),
+    decaySteps: Math.max(
+      1,
+      Math.round(randRange(RELEASE_LIFETIME_MIN_SECONDS, RELEASE_LIFETIME_MAX_SECONDS) / STEP_SECONDS)
+    ),
+  };
+}
+
 function beginReleaseEnvelope(state: AgentState, intensity: number): void {
-  const commitSteps = Math.max(
-    1,
-    Math.round(randRange(RELEASE_COMMIT_MIN_SECONDS, RELEASE_COMMIT_MAX_SECONDS) / STEP_SECONDS)
-  );
-  const decaySteps = Math.max(
-    1,
-    Math.round(randRange(RELEASE_LIFETIME_MIN_SECONDS, RELEASE_LIFETIME_MAX_SECONDS) / STEP_SECONDS)
-  );
+  const { commitSteps, decaySteps } = createReleaseTiming();
   state.energy = Math.min(1, intensity);
   state.releaseStartIntensity = state.energy;
   state.releaseCommitSteps = commitSteps;
@@ -576,7 +584,7 @@ function triggerDynamicHit(
   );
   const overlapSoft = 1 / Math.sqrt(1 + overlapIndex * 0.9);
   const intensitySoft = HIT_INTENSITY_BASE + intensity * HIT_INTENSITY_SCALE;
-  level.gain.value = Math.max(0.08, crowdSoft * overlapSoft * intensitySoft);
+  level.gain.value = Math.max(MIN_DYNAMIC_GAIN, crowdSoft * overlapSoft * intensitySoft);
   level.connect(output);
   agent.playFn(ctx, when, level, reverb);
   const cleanupMs = Math.max(0, (when - ctx.currentTime + 1.6) * 1000);
@@ -965,7 +973,7 @@ export function GrooveSystem({
                 );
 
                 // Emergent ghost / echo note at high intensity, suppressed in busy moments.
-                const ghostRange = Math.max(0.0001, 1 - GHOST_ENERGY_THRESHOLD);
+                const ghostRange = Math.max(MIN_GAIN_VALUE, 1 - GHOST_ENERGY_THRESHOLD);
                 const ghostChance = GHOST_CHANCE *
                   (activeAgentCount >= GHOST_CROWDED_AGENT_THRESHOLD ? GHOST_CROWDED_MULTIPLIER : 1) *
                   Math.max(0, (s.energy - GHOST_ENERGY_THRESHOLD) / ghostRange);
@@ -1154,41 +1162,38 @@ export function GrooveSystem({
 
       if (states.length === 0) {
         // First initialisation
-        agentStateRef.current = positions.map((pos, i) => ({
-          x: pos.x,
-          y: pos.y,
-          vx: 0,
-          vy: 0,
-          restX: pos.x,
-          restY: pos.y,
-          energy: 0,
-          dragging: false,
-          pointerId: null,
-          holdStart: null,
-          pulseUntil: 0,
-          scheduledTap: false,
-          lastStep: -1,
-          // Mutable pattern state — seeded from AgentDef
-          dynamicLength: AGENTS[i].patternLength,
-          dynamicPhase: AGENTS[i].phaseOffset,
-          holdPhaseAccum: 0,
-          // Inter-agent influence
-          pendingInfluence: 0,
-          // Memory / drift — stagger initial drift timers so agents don't all drift at once
+        agentStateRef.current = positions.map((pos, i) => {
+          const { commitSteps, decaySteps } = createReleaseTiming();
+          return {
+            x: pos.x,
+            y: pos.y,
+            vx: 0,
+            vy: 0,
+            restX: pos.x,
+            restY: pos.y,
+            energy: 0,
+            dragging: false,
+            pointerId: null,
+            holdStart: null,
+            pulseUntil: 0,
+            scheduledTap: false,
+            lastStep: -1,
+            // Mutable pattern state — seeded from AgentDef
+            dynamicLength: AGENTS[i].patternLength,
+            dynamicPhase: AGENTS[i].phaseOffset,
+            holdPhaseAccum: 0,
+            // Inter-agent influence
+            pendingInfluence: 0,
+            // Memory / drift — stagger initial drift timers so agents don't all drift at once
             memoryAvg: 0,
             driftTimer: DRIFT_STEPS_MIN +
               Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN)),
             releaseAgeSteps: 0,
-            releaseCommitSteps: Math.max(
-              1,
-              Math.round(RELEASE_COMMIT_MIN_SECONDS / STEP_SECONDS)
-            ),
-            releaseDecaySteps: Math.max(
-              1,
-              Math.round(RELEASE_LIFETIME_MIN_SECONDS / STEP_SECONDS)
-            ),
+            releaseCommitSteps: commitSteps,
+            releaseDecaySteps: decaySteps,
             releaseStartIntensity: 0,
-          }));
+          };
+        });
       } else {
         // Reposition rest points, preserving current spring displacement
         positions.forEach((pos, i) => {
