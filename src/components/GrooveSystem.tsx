@@ -56,8 +56,12 @@ const CROWD_SOFT_PER_AGENT = 0.065;
 const CROWD_SOFT_MAX_REDUCTION = 0.46;
 const HIT_INTENSITY_BASE = 0.34;
 const HIT_INTENSITY_SCALE = 0.78;
+const OVERLAP_SOFT_FACTOR = 0.9;
 const MIN_GAIN_VALUE = 0.0001;
 const MIN_DYNAMIC_GAIN = 0.08;
+const HAND_DRUM_NOISE_FREQ_MULTIPLIER = 5.2;
+const SYNCOPATION_CHANCE_SCALE = 1.2;
+const FILL_CHANCE_SCALE = 0.85;
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
@@ -230,7 +234,7 @@ function makeHandDrum(
     noise.buffer = getPercussionNoiseBuffer(ctx);
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = "bandpass";
-    noiseFilter.frequency.setValueAtTime(bodyFreq * 5.2, when);
+    noiseFilter.frequency.setValueAtTime(bodyFreq * HAND_DRUM_NOISE_FREQ_MULTIPLIER, when);
     noiseFilter.Q.value = 0.7;
     const noiseGain = ctx.createGain();
     noiseGain.gain.setValueAtTime(MIN_GAIN_VALUE, when);
@@ -524,10 +528,10 @@ function shouldFire(step: number, length: number, energy: number, memoryAvg: num
   if (eff >= 0.56 && step % 2 === 0) return true;
   // Syncopation and fills taper away naturally as intensity drops.
   if (eff >= 0.72 && step % 2 === 1 && step < length - 1) {
-    return Math.random() < (eff - 0.72) * 1.2;
+    return Math.random() < (eff - 0.72) * SYNCOPATION_CHANCE_SCALE;
   }
   if (eff >= 0.86 && step < length - 1) {
-    return Math.random() < (eff - 0.86) * 0.85;
+    return Math.random() < (eff - 0.86) * FILL_CHANCE_SCALE;
   }
   return false;
 }
@@ -582,7 +586,7 @@ function triggerDynamicHit(
     CROWD_SOFT_MAX_REDUCTION,
     Math.max(0, activeAgentCount - CROWD_SOFT_START) * CROWD_SOFT_PER_AGENT
   );
-  const overlapSoft = 1 / Math.sqrt(1 + overlapIndex * 0.9);
+  const overlapSoft = 1 / Math.sqrt(1 + overlapIndex * OVERLAP_SOFT_FACTOR);
   const intensitySoft = HIT_INTENSITY_BASE + intensity * HIT_INTENSITY_SCALE;
   level.gain.value = Math.max(MIN_DYNAMIC_GAIN, crowdSoft * overlapSoft * intensitySoft);
   level.connect(output);
