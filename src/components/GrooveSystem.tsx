@@ -16,32 +16,32 @@ const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
 // ── Energy ────────────────────────────────────────────────────────────────────
-const ENERGY_THRESHOLD = 0.12;
+const ENERGY_THRESHOLD = 0.18;
 const HOLD_RATE = 0.008; // energy gained per animation frame while holding
-const MAX_TRIGGERS_PER_STEP = 3;
+const MAX_TRIGGERS_PER_STEP = 2;
 const TAP_ENERGY_BOOST = 0.5; // energy added to an agent on a quick tap
 
 // ── Interaction influence ─────────────────────────────────────────────────────
 const HOLD_PHASE_RATE = 0.30;         // phase steps shifted per second while holding
-const HOLD_SUBDIVIDE_THRESHOLD = 0.45; // energy above which hold triggers freely on even steps
+const HOLD_SUBDIVIDE_THRESHOLD = 0.55; // energy above which hold triggers freely on even steps
 
 // ── Non-linear decay ──────────────────────────────────────────────────────────
-const DECAY_HIGH  = 0.84;  // fast decay when energy > 0.65
-const DECAY_MID   = 0.88;  // normal decay 0.30 – 0.65
-const DECAY_LOW   = 0.94;  // slow "sustain" decay when energy < 0.30
+const DECAY_HIGH  = 0.78;  // fast decay when energy > 0.65
+const DECAY_MID   = 0.84;  // normal decay 0.30 – 0.65
+const DECAY_LOW   = 0.90;  // slow "sustain" decay when energy < 0.30
 const DECAY_JITTER = 0.03; // ±random variance each step
 
 // ── Inter-agent influence ─────────────────────────────────────────────────────
-const INTER_AGENT_NUDGE = 0.04; // energy added to ring-neighbours per fire event
+const INTER_AGENT_NUDGE = 0.015; // energy added to neighbours per fire event
 
 // ── Ghost / echo notes ────────────────────────────────────────────────────────
 const GHOST_ENERGY_THRESHOLD = 0.72; // minimum energy for a ghost note
-const GHOST_CHANCE = 0.20;           // probability per qualifying fire
+const GHOST_CHANCE = 0.12;           // probability per qualifying fire
 const GHOST_GAIN  = 0.28;            // ghost volume relative to main
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
-const MEMORY_BIAS = 0.12; // max effective-energy lift from memory
+const MEMORY_BIAS = 0.06; // max effective-energy lift from memory
 
 // ── Drift ─────────────────────────────────────────────────────────────────────
 const DRIFT_STEPS_MIN = 40;
@@ -198,6 +198,51 @@ const AGENTS: AgentDef[] = [
     phaseOffset: 0,
     playFn: makeTone(110, "sine", 500, 0.12, 0.70, 0.28),
   },
+  {
+    id: 5,
+    label: "Ember",
+    emoji: "🔥",
+    color: "#ff8a65",
+    patternLength: 10,
+    phaseOffset: 3,
+    playFn: makeTone(246.942, "triangle", 520, 0.08, 0.70, 0.17),
+  },
+  {
+    id: 6,
+    label: "Glow",
+    emoji: "🕯️",
+    color: "#ffb74d",
+    patternLength: 7,
+    phaseOffset: 1,
+    playFn: makeTone(369.994, "sine", 720, 0.07, 0.62, 0.16),
+  },
+  {
+    id: 7,
+    label: "Hush",
+    emoji: "☁️",
+    color: "#f4a261",
+    patternLength: 9,
+    phaseOffset: 4,
+    playFn: makeTone(277.183, "sine", 640, 0.09, 0.78, 0.15),
+  },
+  {
+    id: 8,
+    label: "Dusk",
+    emoji: "🌆",
+    color: "#c084fc",
+    patternLength: 11,
+    phaseOffset: 5,
+    playFn: makeTone(184.997, "triangle", 500, 0.10, 0.82, 0.18),
+  },
+  {
+    id: 9,
+    label: "Amber",
+    emoji: "🍯",
+    color: "#f59e0b",
+    patternLength: 5,
+    phaseOffset: 2,
+    playFn: makeTone(554.365, "sine", 900, 0.06, 0.58, 0.14),
+  },
 ];
 
 // ── Pattern density logic ─────────────────────────────────────────────────────
@@ -267,12 +312,40 @@ export function GrooveSystem({
 
   // ── Rest-position layout ────────────────────────────────────────────────────
   const computeRestPositions = useCallback((w: number, h: number) => {
-    const cx = w / 2;
-    const cy = h / 2;
-    const r = Math.min(w, h) * 0.31;
-    return AGENTS.map((_, i) => {
-      const angle = (2 * Math.PI * i) / AGENTS.length - Math.PI / 2;
-      return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+    const pad = AGENT_RADIUS + 18;
+    const left = pad;
+    const right = Math.max(left, w - pad);
+    const top = pad;
+    const bottom = Math.max(top, h - pad);
+
+    const columnCounts = [3, 4, 3];
+    const rowCounts = [3, 4, 3];
+    const isPortrait = h >= w;
+
+    if (isPortrait) {
+      const maxRows = Math.max(...columnCounts);
+      const colStep = (right - left) / (columnCounts.length - 1 || 1);
+      const rowStep = (bottom - top) / (maxRows - 1 || 1);
+      return columnCounts.flatMap((count, col) => {
+        const x = left + col * colStep;
+        const startRow = (maxRows - count) / 2;
+        return Array.from({ length: count }, (_, row) => ({
+          x,
+          y: top + (startRow + row) * rowStep,
+        }));
+      });
+    }
+
+    const maxCols = Math.max(...rowCounts);
+    const rowStep = (bottom - top) / (rowCounts.length - 1 || 1);
+    const colStep = (right - left) / (maxCols - 1 || 1);
+    return rowCounts.flatMap((count, row) => {
+      const y = top + row * rowStep;
+      const startCol = (maxCols - count) / 2;
+      return Array.from({ length: count }, (_, col) => ({
+        x: left + (startCol + col) * colStep,
+        y,
+      }));
     });
   }, []);
 
@@ -574,6 +647,7 @@ export function GrooveSystem({
       // ── 3. Render agents onto canvas ──────────────────────────────────────
       canvasCtx.clearRect(0, 0, w, h);
 
+      const isPortrait = h >= w;
       for (let i = 0; i < AGENTS.length; i++) {
         const agent = AGENTS[i];
         const s = states[i];
@@ -633,19 +707,26 @@ export function GrooveSystem({
           canvasCtx.stroke();
         }
 
-        // Emoji centred in circle
+        // Emoji + label reorient with device orientation
         const emojiSize = Math.round(r * 0.7);
         canvasCtx.font = `${emojiSize}px serif`;
-        canvasCtx.textAlign = "center";
+        canvasCtx.fillStyle = "rgba(255,255,255,0.96)";
         canvasCtx.textBaseline = "middle";
-        canvasCtx.fillText(agent.emoji, s.x, s.y);
-
-        // Label below circle
-        canvasCtx.font = "bold 11px system-ui, sans-serif";
-        canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
-        canvasCtx.textAlign = "center";
-        canvasCtx.textBaseline = "top";
-        canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
+        if (isPortrait) {
+          canvasCtx.textAlign = "center";
+          canvasCtx.fillText(agent.emoji, s.x, s.y);
+          canvasCtx.font = "bold 11px system-ui, sans-serif";
+          canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
+          canvasCtx.textBaseline = "top";
+          canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
+        } else {
+          canvasCtx.textAlign = "center";
+          canvasCtx.fillText(agent.emoji, s.x, s.y);
+          canvasCtx.font = "bold 11px system-ui, sans-serif";
+          canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
+          canvasCtx.textAlign = "left";
+          canvasCtx.fillText(agent.label, s.x + r + 10, s.y - 6);
+        }
 
         canvasCtx.restore();
       }
