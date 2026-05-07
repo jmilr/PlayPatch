@@ -18,6 +18,7 @@ const MIN_LAYOUT_ASPECT = 0.45;
 const CELL_WIDTH_RADIUS_FACTOR = 0.35;
 const CELL_HEIGHT_LABEL_PADDING = 20;
 const CELL_HEIGHT_RADIUS_FACTOR = 0.5;
+const HIT_TEST_PADDING = 12;
 const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
@@ -53,8 +54,6 @@ const MEMORY_BIAS = 0.06; // max effective-energy lift from memory
 const DRIFT_STEPS_MIN = 40;
 const DRIFT_STEPS_MAX = 96;
 const DRIFT_LENGTH_RANGE: [number, number] = [4, 13];
-const BELL_RELEASE_MS = 1800;
-const GUITAR_RELEASE_MS = 2300;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type PlayFn = (
@@ -64,8 +63,6 @@ type PlayFn = (
   reverb: ConvolverNode | null
 ) => void;
 
-const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
-
 function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuffer {
   const length = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
   const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
@@ -74,6 +71,16 @@ function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuf
     data[i] = Math.random() * 2 - 1;
   }
   return buffer;
+}
+
+const noiseBufferCache = new WeakMap<AudioContext, AudioBuffer>();
+
+function getCrashNoiseBuffer(ctx: AudioContext): AudioBuffer {
+  const cached = noiseBufferCache.get(ctx);
+  if (cached) return cached;
+  const created = createNoiseBuffer(ctx, 1.1);
+  noiseBufferCache.set(ctx, created);
+  return created;
 }
 
 interface AgentDef {
@@ -203,7 +210,7 @@ function makeSoftCrash(
     bodyGain.connect(mix);
 
     const noise = ctx.createBufferSource();
-    noise.buffer = createNoiseBuffer(ctx, 1.1);
+    noise.buffer = getCrashNoiseBuffer(ctx);
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = "bandpass";
     noiseFilter.frequency.setValueAtTime(noiseCenterHz, when);
@@ -249,6 +256,7 @@ function makeSoftBell(freq: number): PlayFn {
       { mul: 2.01, gain: 0.08, decay: 0.9 },
       { mul: 3.18, gain: 0.05, decay: 0.7 },
     ];
+    let remainingPartials = partials.length;
 
     const send = ctx.createGain();
     send.gain.value = 0.58;
@@ -275,11 +283,11 @@ function makeSoftBell(freq: number): PlayFn {
         try {
           osc.disconnect();
           amp.disconnect();
+          remainingPartials -= 1;
+          if (remainingPartials === 0) send.disconnect();
         } catch { /* ignore */ }
       };
     });
-
-    setTimeout(() => { try { send.disconnect(); } catch { /* ignore */ } }, BELL_RELEASE_MS);
   };
 }
 
@@ -295,7 +303,9 @@ function makeWarmGuitarStrum(rootHz: number): PlayFn {
   ];
 
   return (ctx, when, output, reverb) => {
+    const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
     const chord = chordSemitoneSets[Math.floor(Math.random() * chordSemitoneSets.length)];
+    let remainingNotes = chord.length;
     const reverbSend = ctx.createGain();
     reverbSend.gain.value = 0.5;
     if (reverb) reverbSend.connect(reverb);
@@ -346,11 +356,11 @@ function makeWarmGuitarStrum(rootHz: number): PlayFn {
           harmonicGain.disconnect();
           filter.disconnect();
           gain.disconnect();
+          remainingNotes -= 1;
+          if (remainingNotes === 0) reverbSend.disconnect();
         } catch { /* ignore */ }
       };
     });
-
-    setTimeout(() => { try { reverbSend.disconnect(); } catch { /* ignore */ } }, GUITAR_RELEASE_MS);
   };
 }
 
@@ -569,7 +579,7 @@ export function GrooveSystem({
     const r = sizeRef.current.radius;
     for (let i = 0; i < states.length; i++) {
       const s = states[i];
-      if (Math.hypot(x - s.x, y - s.y) <= r + 12) return i;
+      if (Math.hypot(x - s.x, y - s.y) <= r + HIT_TEST_PADDING) return i;
     }
     return -1;
   }, []);
