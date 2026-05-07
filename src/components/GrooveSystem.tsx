@@ -49,6 +49,8 @@ const MEMORY_BIAS = 0.06; // max effective-energy lift from memory
 const DRIFT_STEPS_MIN = 40;
 const DRIFT_STEPS_MAX = 96;
 const DRIFT_LENGTH_RANGE: [number, number] = [4, 13];
+const BELL_RELEASE_MS = 1800;
+const GUITAR_RELEASE_MS = 2300;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type PlayFn = (
@@ -273,19 +275,18 @@ function makeSoftBell(freq: number): PlayFn {
       };
     });
 
-    const releaseMs = 1800;
-    setTimeout(() => { try { send.disconnect(); } catch { /* ignore */ } }, releaseMs);
+    setTimeout(() => { try { send.disconnect(); } catch { /* ignore */ } }, BELL_RELEASE_MS);
   };
 }
 
 function makeWarmGuitarStrum(rootHz: number): PlayFn {
   const chordSemitoneSets = [
-    [0, 4, 7, 12],   // A
-    [5, 9, 12, 16],  // D
-    [7, 11, 14, 19], // E
-    [9, 12, 16, 21], // F#m
-    [4, 7, 11, 16],  // C#m
-    [2, 5, 9, 14],   // Bm
+    [0, 4, 7, 14],   // Aadd9
+    [5, 9, 12, 16],  // Dmaj7(no5)
+    [7, 11, 14, 19], // E triad + octave
+    [9, 12, 16, 19], // F#m7
+    [4, 7, 11, 16],  // C#m7(no7)
+    [2, 5, 9, 14],   // Bm7(no7)
   ];
 
   return (ctx, when, output, reverb) => {
@@ -344,7 +345,7 @@ function makeWarmGuitarStrum(rootHz: number): PlayFn {
       };
     });
 
-    setTimeout(() => { try { reverbSend.disconnect(); } catch { /* ignore */ } }, 2300);
+    setTimeout(() => { try { reverbSend.disconnect(); } catch { /* ignore */ } }, GUITAR_RELEASE_MS);
   };
 }
 
