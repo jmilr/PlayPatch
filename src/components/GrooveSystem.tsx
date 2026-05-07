@@ -711,17 +711,15 @@ export function GrooveSystem({
         const emojiSize = Math.round(r * 0.7);
         canvasCtx.font = `${emojiSize}px serif`;
         canvasCtx.fillStyle = "rgba(255,255,255,0.96)";
+        canvasCtx.textAlign = "center";
         canvasCtx.textBaseline = "middle";
+        canvasCtx.fillText(agent.emoji, s.x, s.y);
         if (isPortrait) {
-          canvasCtx.textAlign = "center";
-          canvasCtx.fillText(agent.emoji, s.x, s.y);
           canvasCtx.font = "bold 11px system-ui, sans-serif";
           canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
           canvasCtx.textBaseline = "top";
           canvasCtx.fillText(agent.label, s.x, s.y + r + 6);
         } else {
-          canvasCtx.textAlign = "center";
-          canvasCtx.fillText(agent.emoji, s.x, s.y);
           canvasCtx.font = "bold 11px system-ui, sans-serif";
           canvasCtx.fillStyle = "rgba(226,232,240,0.85)";
           canvasCtx.textAlign = "left";
