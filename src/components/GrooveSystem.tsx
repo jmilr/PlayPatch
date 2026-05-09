@@ -20,41 +20,41 @@ const CELL_HEIGHT_LABEL_PADDING = 20;
 const CELL_HEIGHT_RADIUS_FACTOR = 0.5;
 const HIT_TEST_PADDING = 12;
 const LABEL_FONT_SIZE_FACTOR = 0.28;
-const DRAG_ENERGY_SCALE = 160; // px of displacement for energy = 1.0
+const DRAG_ENERGY_SCALE = 140; // px of displacement for energy = 1.0 (superlinear curve)
 const DRAG_THRESHOLD = 12;     // px of movement before a press counts as a drag
 
 // ── Energy ────────────────────────────────────────────────────────────────────
 const ENERGY_THRESHOLD = 0.18;
 const HOLD_RATE = 0.008; // energy gained per animation frame while holding
 const MAX_TRIGGERS_PER_STEP = 2;
-const TAP_ENERGY_BOOST = 0.5; // energy added to an agent on a quick tap
+const TAP_ENERGY_BOOST = 0.35; // gentle nudge on tap — big pulls are how you rev
 
 // ── Interaction influence ─────────────────────────────────────────────────────
-const HOLD_PHASE_RATE = 0.30;         // phase steps shifted per second while holding
+const HOLD_PHASE_RATE = 0.30;          // phase steps shifted per second while holding
 const HOLD_SUBDIVIDE_THRESHOLD = 0.55; // energy above which hold triggers freely on even steps
 
 // ── Non-linear decay ──────────────────────────────────────────────────────────
 const DECAY_HIGH  = 0.78;  // fast decay when energy > 0.65
 const DECAY_MID   = 0.84;  // normal decay 0.30 – 0.65
 const DECAY_LOW   = 0.90;  // slow "sustain" decay when energy < 0.30
-const DECAY_JITTER = 0.03; // ±random variance each step
+const DECAY_JITTER = 0.02; // ±random variance (reduced from 0.03)
 
 // ── Inter-agent influence ─────────────────────────────────────────────────────
-const INTER_AGENT_NUDGE = 0.015; // energy added to neighbours per fire event
+// Base nudge is amplified by the firing agent's energy, so high-energy cascades explode.
+const INTER_AGENT_NUDGE_BASE = 0.018;
+const INTER_AGENT_NUDGE_SCALE = 4.0; // multiplier on sender energy added to nudge
 
-// ── Ghost / echo notes ────────────────────────────────────────────────────────
-const GHOST_ENERGY_THRESHOLD = 0.72; // minimum energy for a ghost note
-const GHOST_CHANCE = 0.12;           // probability per qualifying fire
-const GHOST_GAIN  = 0.28;            // ghost volume relative to main
+// ── Eruption / glide-back system ─────────────────────────────────────────────
+// When system-wide energy is high, decay slows so the eruption glides back gracefully.
+const ERUPTION_THRESHOLD = 0.40; // average agent energy above which glide kicks in
+const ERUPTION_DECAY_BOOST = 0.12; // max extra decay-rate lift at full eruption
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 const MEMORY_TC   = 40;   // leaky-average time constant in steps
 const MEMORY_BIAS = 0.06; // max effective-energy lift from memory
 
-// ── Drift ─────────────────────────────────────────────────────────────────────
-const DRIFT_STEPS_MIN = 40;
-const DRIFT_STEPS_MAX = 96;
-const DRIFT_LENGTH_RANGE: [number, number] = [4, 13];
+// ── Pattern length bounds ─────────────────────────────────────────────────────
+const PATTERN_LENGTH_RANGE: [number, number] = [4, 13];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type PlayFn = (
@@ -64,33 +64,13 @@ type PlayFn = (
   reverb: ConvolverNode | null
 ) => void;
 
-function createNoiseBuffer(ctx: AudioContext, durationSeconds: number): AudioBuffer {
-  const length = Math.max(1, Math.floor(ctx.sampleRate * durationSeconds));
-  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < length; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
-  return buffer;
-}
-
-const noiseBufferCache = new WeakMap<AudioContext, AudioBuffer>();
-
-function getCrashNoiseBuffer(ctx: AudioContext): AudioBuffer {
-  const cached = noiseBufferCache.get(ctx);
-  if (cached) return cached;
-  const created = createNoiseBuffer(ctx, 1.1);
-  noiseBufferCache.set(ctx, created);
-  return created;
-}
-
 interface AgentDef {
   readonly id: number;
   readonly label: string;
   readonly emoji: string;
   readonly color: string;
-  readonly patternLength: number; // number of steps per cycle
-  readonly phaseOffset: number;   // step offset to stagger entry
+  readonly patternLength: number;
+  readonly phaseOffset: number;
   readonly playFn: PlayFn;
 }
 
@@ -104,19 +84,15 @@ interface AgentState {
   energy: number;
   dragging: boolean;
   pointerId: number | null;
-  holdStart: number | null; // performance.now() when hold began
-  pulseUntil: number;       // performance.now() until visual pulse shows
-  scheduledTap: boolean;    // pending quantised tap on next step
-  lastStep: number;         // last clock step this agent triggered on
-  // Mutable pattern state (mutated by taps, hold, and drift)
-  dynamicLength: number;    // current pattern cycle length (may differ from AgentDef)
-  dynamicPhase: number;     // current phase offset in steps
-  holdPhaseAccum: number;   // fractional phase steps accumulated while held
-  // Inter-agent coupling
-  pendingInfluence: number; // energy nudge queued from ring-neighbour fires
-  // Memory / drift
-  memoryAvg: number;        // leaky-average fire density (0..1)
-  driftTimer: number;       // steps until next spontaneous evolution event
+  holdStart: number | null;
+  pulseUntil: number;
+  scheduledTap: boolean;
+  lastStep: number;
+  dynamicLength: number;
+  dynamicPhase: number;
+  holdPhaseAccum: number;
+  pendingInfluence: number;
+  memoryAvg: number;
 }
 
 export interface GrooveSystemProps {
@@ -127,7 +103,7 @@ export interface GrooveSystemProps {
   rainbowFieldRef: React.MutableRefObject<RainbowField | null>;
 }
 
-// ── Percussive tone factory ───────────────────────────────────────────────────
+// ── Melodic tone — detuned unison chorus + delayed vibrato ────────────────────
 function makeTone(
   freq: number,
   waveform: OscillatorType,
@@ -137,9 +113,25 @@ function makeTone(
   peak: number
 ): PlayFn {
   return (ctx, when, output, reverb) => {
-    const osc = ctx.createOscillator();
-    osc.type = waveform;
-    osc.frequency.setValueAtTime(freq, when);
+    // Two oscillators detuned ±7 cents give natural chorus without flanging
+    const osc1 = ctx.createOscillator();
+    osc1.type = waveform;
+    osc1.frequency.setValueAtTime(freq, when);
+
+    const osc2 = ctx.createOscillator();
+    osc2.type = waveform;
+    osc2.frequency.setValueAtTime(freq * Math.pow(2, 7 / 1200), when);
+
+    // Vibrato LFO — starts silent, swells in after attack to avoid pitchy onset
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine";
+    lfo.frequency.setValueAtTime(4.5, when);
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.setValueAtTime(0, when);
+    lfoDepth.gain.linearRampToValueAtTime(freq * 0.003, when + attack + 0.08);
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(osc1.frequency);
+    lfoDepth.connect(osc2.frequency);
 
     const filt = ctx.createBiquadFilter();
     filt.type = "lowpass";
@@ -149,13 +141,62 @@ function makeTone(
       when + attack + decay
     );
 
+    // Both oscs share the filter; use ~55% of peak so the combined level stays natural
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.linearRampToValueAtTime(peak, when + attack);
+    gain.gain.linearRampToValueAtTime(peak * 0.55, when + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, when + attack + decay);
 
     const send = ctx.createGain();
     send.gain.value = 0.4;
+
+    osc1.connect(filt);
+    osc2.connect(filt);
+    filt.connect(gain);
+    gain.connect(output);
+    gain.connect(send);
+    if (reverb) send.connect(reverb);
+
+    const stopAt = when + attack + decay + 0.1;
+    lfo.start(when);
+    lfo.stop(stopAt);
+    osc1.start(when);
+    osc1.stop(stopAt);
+    osc2.start(when);
+    osc2.stop(stopAt);
+
+    osc1.onended = () => {
+      try {
+        lfo.disconnect(); lfoDepth.disconnect();
+        osc1.disconnect(); osc2.disconnect();
+        filt.disconnect(); gain.disconnect(); send.disconnect();
+      } catch { /* ignore */ }
+    };
+  };
+}
+
+// ── Marimba — replaces crash percussion ───────────────────────────────────────
+// Fast attack, short sine decay, slight pitch drop for bar-resonance character.
+function makeMarimba(freq: number, peak = 0.26): PlayFn {
+  return (ctx, when, output, reverb) => {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, when);
+    // Slight pitch drop (bar resonance) — very subtle
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.975, when + 0.05);
+
+    const filt = ctx.createBiquadFilter();
+    filt.type = "lowpass";
+    filt.frequency.setValueAtTime(freq * 7, when);
+    filt.frequency.exponentialRampToValueAtTime(freq * 2.2, when + 0.3);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.linearRampToValueAtTime(peak, when + 0.005); // 5 ms attack = punchy mallet
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.32);
+
+    const send = ctx.createGain();
+    send.gain.value = 0.18;
 
     osc.connect(filt);
     filt.connect(gain);
@@ -163,202 +204,122 @@ function makeTone(
     gain.connect(send);
     if (reverb) send.connect(reverb);
 
-    const stopAt = when + attack + decay + 0.1;
+    const stopAt = when + 0.38;
     osc.start(when);
     osc.stop(stopAt);
     osc.onended = () => {
-      try {
-        osc.disconnect();
-        filt.disconnect();
-        gain.disconnect();
-        send.disconnect();
-      } catch { /* ignore */ }
+      try { osc.disconnect(); filt.disconnect(); gain.disconnect(); send.disconnect(); } catch { /* ignore */ }
     };
   };
 }
 
-function makeSoftCrash(
-  bodyFreq: number,
-  bodyDecay: number,
-  noiseCenterHz: number,
-  peak: number
-): PlayFn {
-  return (ctx, when, output, reverb) => {
-    const mix = ctx.createGain();
-    mix.gain.value = 1;
-    mix.connect(output);
-
-    const send = ctx.createGain();
-    send.gain.value = 0.42;
-    mix.connect(send);
-    if (reverb) send.connect(reverb);
-
-    const bodyOsc = ctx.createOscillator();
-    bodyOsc.type = "triangle";
-    bodyOsc.frequency.setValueAtTime(bodyFreq, when);
-    bodyOsc.frequency.exponentialRampToValueAtTime(Math.max(55, bodyFreq * 0.52), when + bodyDecay);
-    const bodyFilter = ctx.createBiquadFilter();
-    bodyFilter.type = "lowpass";
-    bodyFilter.frequency.setValueAtTime(1800, when);
-    bodyFilter.frequency.exponentialRampToValueAtTime(460, when + bodyDecay);
-    const bodyGain = ctx.createGain();
-    bodyGain.gain.setValueAtTime(0.0001, when);
-    bodyGain.gain.linearRampToValueAtTime(peak * 0.55, when + 0.012);
-    bodyGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay);
-
-    bodyOsc.connect(bodyFilter);
-    bodyFilter.connect(bodyGain);
-    bodyGain.connect(mix);
-
-    const noise = ctx.createBufferSource();
-    noise.buffer = getCrashNoiseBuffer(ctx);
-    const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = "bandpass";
-    noiseFilter.frequency.setValueAtTime(noiseCenterHz, when);
-    noiseFilter.Q.value = 0.85;
-    const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.0001, when);
-    noiseGain.gain.linearRampToValueAtTime(peak, when + 0.008);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, when + bodyDecay * 1.35);
-
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(mix);
-
-    const stopAt = when + bodyDecay * 1.35 + 0.1;
-    bodyOsc.start(when);
-    bodyOsc.stop(stopAt);
-    noise.start(when);
-    noise.stop(stopAt);
-
-    bodyOsc.onended = () => {
-      try {
-        bodyOsc.disconnect();
-        bodyFilter.disconnect();
-        bodyGain.disconnect();
-      } catch { /* ignore */ }
-    };
-    noise.onended = () => {
-      try {
-        noise.disconnect();
-        noiseFilter.disconnect();
-        noiseGain.disconnect();
-        send.disconnect();
-        mix.disconnect();
-      } catch { /* ignore */ }
-    };
-  };
-}
-
-function makeSoftBell(freq: number): PlayFn {
+// ── Celesta — replaces bell ───────────────────────────────────────────────────
+// Lower octave + inharmonic celesta partials (1, 2.756, 5.404) = warm sparkle.
+function makeCelesta(freq: number): PlayFn {
+  const f = freq * 0.5; // drop an octave — E5 → E4, much warmer
   return (ctx, when, output, reverb) => {
     const partials: Array<{ mul: number; gain: number; decay: number }> = [
-      { mul: 1, gain: 0.14, decay: 1.2 },
-      { mul: 2.01, gain: 0.08, decay: 0.9 },
-      { mul: 3.18, gain: 0.05, decay: 0.7 },
+      { mul: 1.0,   gain: 0.16, decay: 0.70 },
+      { mul: 2.756, gain: 0.07, decay: 0.46 },
+      { mul: 5.404, gain: 0.03, decay: 0.28 },
     ];
-    let remainingPartials = partials.length;
+    let remaining = partials.length;
 
     const send = ctx.createGain();
-    send.gain.value = 0.58;
+    send.gain.value = 0.52;
     if (reverb) send.connect(reverb);
 
-    partials.forEach(({ mul, gain, decay }) => {
+    partials.forEach(({ mul, gain: gVal, decay }) => {
       const osc = ctx.createOscillator();
       osc.type = "sine";
-      osc.frequency.setValueAtTime(freq * mul, when);
+      osc.frequency.setValueAtTime(f * mul, when);
 
       const amp = ctx.createGain();
       amp.gain.setValueAtTime(0.0001, when);
-      amp.gain.linearRampToValueAtTime(gain, when + 0.01);
+      amp.gain.linearRampToValueAtTime(gVal, when + 0.008);
       amp.gain.exponentialRampToValueAtTime(0.0001, when + decay);
 
       osc.connect(amp);
       amp.connect(output);
       amp.connect(send);
 
-      const stopAt = when + decay + 0.12;
+      const stopAt = when + decay + 0.05;
       osc.start(when);
       osc.stop(stopAt);
       osc.onended = () => {
         try {
-          osc.disconnect();
-          amp.disconnect();
-          remainingPartials -= 1;
-          if (remainingPartials === 0) send.disconnect();
+          osc.disconnect(); amp.disconnect();
+          remaining -= 1;
+          if (remaining === 0) send.disconnect();
         } catch { /* ignore */ }
       };
     });
   };
 }
 
-function makeWarmGuitarStrum(rootHz: number): PlayFn {
-  // Warm major-key voicings (semitone offsets relative to the provided root pitch).
-  const chordSemitoneSets = [
-    [0, 4, 7, 14],
-    [5, 9, 12, 16],
-    [7, 11, 14, 19],
-    [9, 12, 16, 19],
-    [4, 7, 11, 16],
-    [2, 5, 9, 14],
+// ── Rhodes chord — replaces guitar strum ──────────────────────────────────────
+// FM synthesis for Rhodes "bark" on attack. Cycles through 4 A-major voicings
+// in a predictable loop so the harmony feels composed, not random.
+function makeRhodesChord(rootHz: number): PlayFn {
+  // Semitone offsets from root — all drawn from A major (A, C#, E, G#, B)
+  const CHORDS = [
+    [0, 7, 14],      // A + E + A (open fifth, spacious)
+    [4, 7, 11],      // C# + E + G# (major triad upper)
+    [7, 12, 16],     // E + A + C# (second inversion)
+    [2, 7, 11],      // B + E + G# (add9 feel)
   ];
+  let chordIdx = 0;
 
   return (ctx, when, output, reverb) => {
-    const randomInRange = (min: number, max: number) => min + Math.random() * (max - min);
-    const chord = chordSemitoneSets[Math.floor(Math.random() * chordSemitoneSets.length)];
-    let remainingNotes = chord.length;
+    const chord = CHORDS[chordIdx % CHORDS.length];
+    chordIdx++;
+
     const reverbSend = ctx.createGain();
-    reverbSend.gain.value = 0.5;
+    reverbSend.gain.value = 0.42;
     if (reverb) reverbSend.connect(reverb);
 
+    let remaining = chord.length;
+
     chord.forEach((semi, idx) => {
-      const start = when + idx * 0.035 + randomInRange(0, 0.01);
-      const freq = rootHz * Math.pow(2, semi / 12);
+      const start = when + idx * 0.022; // gentler stagger than guitar
+      const noteFreq = rootHz * Math.pow(2, semi / 12);
 
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(freq, start);
-      osc.detune.setValueAtTime(randomInRange(-5, 5), start);
+      // FM carrier
+      const carrier = ctx.createOscillator();
+      carrier.type = "sine";
+      carrier.frequency.setValueAtTime(noteFreq, start);
 
-      const harmonic = ctx.createOscillator();
-      harmonic.type = "sine";
-      harmonic.frequency.setValueAtTime(freq * 2, start);
+      // FM modulator: same frequency as carrier, decays from rich to clean
+      const modulator = ctx.createOscillator();
+      modulator.type = "sine";
+      modulator.frequency.setValueAtTime(noteFreq, start);
 
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(2400, start);
-      filter.frequency.exponentialRampToValueAtTime(720, start + 1.8);
-      filter.Q.value = 1.1;
+      const modGain = ctx.createGain();
+      modGain.gain.setValueAtTime(noteFreq * 0.75, start);       // warm bark on attack
+      modGain.gain.exponentialRampToValueAtTime(noteFreq * 0.04, start + 0.14); // fade to clean
+      modulator.connect(modGain);
+      modGain.connect(carrier.frequency);
 
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.linearRampToValueAtTime(0.11, start + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 1.8);
+      const amp = ctx.createGain();
+      amp.gain.setValueAtTime(0.0001, start);
+      amp.gain.linearRampToValueAtTime(0.10, start + 0.012);
+      amp.gain.exponentialRampToValueAtTime(0.0001, start + 1.35);
 
-      const harmonicGain = ctx.createGain();
-      harmonicGain.gain.value = 0.33;
+      carrier.connect(amp);
+      amp.connect(output);
+      amp.connect(reverbSend);
 
-      osc.connect(filter);
-      harmonic.connect(harmonicGain);
-      harmonicGain.connect(filter);
-      filter.connect(gain);
-      gain.connect(output);
-      gain.connect(reverbSend);
-
-      const stopAt = start + 1.95;
-      osc.start(start);
-      harmonic.start(start);
-      osc.stop(stopAt);
-      harmonic.stop(stopAt);
-      harmonic.onended = () => {
+      const stopAt = start + 1.45;
+      carrier.start(start);
+      modulator.start(start);
+      carrier.stop(stopAt);
+      modulator.stop(stopAt);
+      carrier.onended = () => {
         try {
-          osc.disconnect();
-          harmonic.disconnect();
-          harmonicGain.disconnect();
-          filter.disconnect();
-          gain.disconnect();
-          remainingNotes -= 1;
-          if (remainingNotes === 0) reverbSend.disconnect();
+          carrier.disconnect(); modulator.disconnect();
+          modGain.disconnect(); amp.disconnect();
+          remaining -= 1;
+          if (remaining === 0) reverbSend.disconnect();
         } catch { /* ignore */ }
       };
     });
@@ -366,47 +327,12 @@ function makeWarmGuitarStrum(rootHz: number): PlayFn {
 }
 
 // ── Agent definitions ─────────────────────────────────────────────────────────
-// Frequencies form an A-major pentatonic set (A2–A4) — all consonant together.
-// Pattern lengths are co-prime enough to create evolving polyrhythm.
+// Ordered for cascade: bass → melody → marimba → sparkle.
+// Ring topology flows in this order, so energy builds naturally from foundation up.
 const AGENTS: AgentDef[] = [
+  // ── Bass foundation ──
   {
     id: 0,
-    label: "Bloom",
-    emoji: "🌸",
-    color: "#ff5dac",
-    patternLength: 8,
-    phaseOffset: 0,
-    playFn: makeTone(220, "sine", 700, 0.06, 0.55, 0.22),
-  },
-  {
-    id: 1,
-    label: "Drift",
-    emoji: "🌊",
-    color: "#34d2ff",
-    patternLength: 6,
-    phaseOffset: 2,
-    playFn: makeTone(329.628, "triangle", 620, 0.07, 0.60, 0.18),
-  },
-  {
-    id: 2,
-    label: "Mist",
-    emoji: "🌫️",
-    color: "#b967ff",
-    patternLength: 8,
-    phaseOffset: 1,
-    playFn: makeTone(440, "sine", 800, 0.05, 0.50, 0.20),
-  },
-  {
-    id: 3,
-    label: "Earth",
-    emoji: "🌿",
-    color: "#4ade80",
-    patternLength: 12,
-    phaseOffset: 4,
-    playFn: makeTone(164.814, "triangle", 560, 0.10, 0.65, 0.24),
-  },
-  {
-    id: 4,
     label: "Deep",
     emoji: "🌙",
     color: "#1f77ff",
@@ -415,13 +341,51 @@ const AGENTS: AgentDef[] = [
     playFn: makeTone(110, "sine", 500, 0.12, 0.70, 0.28),
   },
   {
+    id: 1,
+    label: "Earth",
+    emoji: "🌿",
+    color: "#4ade80",
+    patternLength: 12,
+    phaseOffset: 4,
+    playFn: makeTone(164.814, "triangle", 560, 0.10, 0.65, 0.24),
+  },
+  // ── Melodic layer ──
+  {
+    id: 2,
+    label: "Bloom",
+    emoji: "🌸",
+    color: "#ff5dac",
+    patternLength: 8,
+    phaseOffset: 0,
+    playFn: makeTone(220, "sine", 700, 0.06, 0.55, 0.22),
+  },
+  {
+    id: 3,
+    label: "Drift",
+    emoji: "🌊",
+    color: "#34d2ff",
+    patternLength: 6,
+    phaseOffset: 2,
+    playFn: makeTone(329.628, "triangle", 620, 0.07, 0.60, 0.18),
+  },
+  {
+    id: 4,
+    label: "Mist",
+    emoji: "🌫️",
+    color: "#b967ff",
+    patternLength: 8,
+    phaseOffset: 1,
+    playFn: makeTone(440, "sine", 800, 0.05, 0.50, 0.20),
+  },
+  // ── Marimba percussion ──
+  {
     id: 5,
     label: "Ember",
     emoji: "🔥",
     color: "#ff8a65",
     patternLength: 10,
     phaseOffset: 3,
-    playFn: makeSoftCrash(196, 0.85, 760, 0.13),
+    playFn: makeMarimba(220, 0.24),   // A3 marimba
   },
   {
     id: 6,
@@ -430,7 +394,7 @@ const AGENTS: AgentDef[] = [
     color: "#ffb74d",
     patternLength: 7,
     phaseOffset: 1,
-    playFn: makeSoftCrash(246.942, 0.72, 1280, 0.11),
+    playFn: makeMarimba(329.628, 0.22), // E4 marimba
   },
   {
     id: 7,
@@ -439,8 +403,9 @@ const AGENTS: AgentDef[] = [
     color: "#f4a261",
     patternLength: 9,
     phaseOffset: 4,
-    playFn: makeSoftCrash(164.814, 1.05, 980, 0.12),
+    playFn: makeMarimba(110, 0.26),   // A2 deep marimba thump
   },
+  // ── Sparkle accents ──
   {
     id: 8,
     label: "Dusk",
@@ -448,7 +413,7 @@ const AGENTS: AgentDef[] = [
     color: "#c084fc",
     patternLength: 11,
     phaseOffset: 5,
-    playFn: makeSoftBell(659.255),
+    playFn: makeCelesta(659.255),     // E5 → played at E4 inside makeCelesta
   },
   {
     id: 9,
@@ -457,56 +422,19 @@ const AGENTS: AgentDef[] = [
     color: "#f59e0b",
     patternLength: 5,
     phaseOffset: 2,
-    playFn: makeWarmGuitarStrum(110),
+    playFn: makeRhodesChord(110),
   },
 ];
 
 // ── Pattern density logic ─────────────────────────────────────────────────────
-/**
- * Returns true if step `step` (within a cycle of `length`) should fire,
- * given the agent's current energy and memory bias. Higher energy unlocks
- * denser patterns; memoryAvg (0..1) adds a small upward nudge so recently
- * active agents stay slightly warmer.
- *
- *  eff ≥ 0.12  → downbeat only (step 0 always fires, guarded by caller)
- *  eff ≥ 0.25  → + half-note point (step at length/2)
- *  eff ≥ 0.45  → + quarter-note points (length/4, 3*length/4)
- *  eff ≥ 0.65  → + all even steps
- *  eff ≥ 0.80  → + all remaining steps except the last
- */
 function shouldFire(step: number, length: number, energy: number, memoryAvg: number): boolean {
   const eff = Math.min(1, energy + memoryAvg * MEMORY_BIAS);
   if (step === 0) return true;
-  // Half-note point
   if (eff >= 0.25 && step * 2 === length) return true;
-  // Quarter-note points (integer only)
   if (eff >= 0.45 && (step * 4 === length || step * 4 === length * 3)) return true;
-  // All even steps
   if (eff >= 0.65 && step % 2 === 0) return true;
-  // Everything except the last step
   if (eff >= 0.80 && step < length - 1) return true;
   return false;
-}
-
-// ── Ghost / echo note helper ──────────────────────────────────────────────────
-/**
- * Schedules a quieter secondary note half a step after `when`, routed
- * through an intermediate gain node so the main signal path is untouched.
- */
-function scheduleGhost(
-  agent: AgentDef,
-  audioCtx: AudioContext,
-  when: number,
-  mainOutput: AudioNode,
-  reverb: ConvolverNode | null
-): void {
-  const ghostGain = audioCtx.createGain();
-  ghostGain.gain.value = GHOST_GAIN;
-  ghostGain.connect(mainOutput);
-  agent.playFn(audioCtx, when + STEP_SECONDS * 0.5, ghostGain, reverb);
-  // Disconnect ghost node after the note has fully decayed (max ~1.5 s after scheduled time)
-  const cleanupMs = Math.max(0, (when - audioCtx.currentTime + 1.5) * 1000);
-  setTimeout(() => { try { ghostGain.disconnect(); } catch { /* ignore */ } }, cleanupMs);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -520,11 +448,11 @@ export function GrooveSystem({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const agentStateRef = useRef<AgentState[]>([]);
-  const clockStartRef = useRef<number | null>(null); // AudioContext time when clock started
+  const clockStartRef = useRef<number | null>(null);
   const lastStepRef = useRef<number>(-1);
   const sizeRef = useRef({ w: 0, h: 0, radius: BASE_AGENT_RADIUS });
   const rafRef = useRef<number | null>(null);
-  const lastFrameTimeRef = useRef<number | null>(null); // performance.now() of previous frame
+  const lastFrameTimeRef = useRef<number | null>(null);
 
   // ── Rest-position layout ────────────────────────────────────────────────────
   const computeRestLayout = useCallback((w: number, h: number) => {
@@ -597,7 +525,6 @@ export function GrooveSystem({
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
 
-      // Start audio and clock on first interaction
       try {
         await ensureAudioContext();
         const audioCtx = audioContextRef.current;
@@ -617,8 +544,21 @@ export function GrooveSystem({
       s.dragging = false;
       s.pointerId = event.pointerId;
       s.holdStart = performance.now();
+
+      // Instant reveal: play at reduced volume immediately so touch feels responsive.
+      // No reverb keeps it dry/close; the quantised note will arrive with full reverb.
+      const audioCtx = audioContextRef.current;
+      if (audioCtx && clockStartRef.current !== null) {
+        const agent = AGENTS[idx];
+        const output = compressorRef.current ?? audioCtx.destination;
+        const revealGain = audioCtx.createGain();
+        revealGain.gain.value = 0.38;
+        revealGain.connect(output);
+        agent.playFn(audioCtx, audioCtx.currentTime, revealGain, null);
+        setTimeout(() => { try { revealGain.disconnect(); } catch { /* ignore */ } }, 2500);
+      }
     },
-    [ensureAudioContext, audioContextRef, hitTest]
+    [ensureAudioContext, audioContextRef, compressorRef, hitTest]
   );
 
   const handlePointerMove = useCallback(
@@ -643,8 +583,9 @@ export function GrooveSystem({
         s.y = y;
         s.vx = 0;
         s.vy = 0;
-        // Displacement directly sets energy
-        s.energy = Math.min(1, Math.hypot(dx, dy) / DRAG_ENERGY_SCALE);
+        // Superlinear (power 1.8) curve: small pulls stay gentle, big pulls really rev
+        const dist = Math.hypot(dx, dy);
+        s.energy = Math.min(1, Math.pow(dist / DRAG_ENERGY_SCALE, 1.8));
       }
     },
     []
@@ -666,33 +607,26 @@ export function GrooveSystem({
         s.holdStart !== null ? performance.now() - s.holdStart : 0;
       const wasDragging = s.dragging;
 
-      // Tap: short press with no significant drag → schedule quantised note + small mutation
       if (!wasDragging && holdDuration < 280) {
         s.scheduledTap = true;
         s.energy = Math.max(s.energy, TAP_ENERGY_BOOST);
-        // Introduce a small random pattern mutation: length ±1, phase ±1, or both
-        const rng = Math.random();
-        if (rng < 0.4) {
+        // Very rare mutation (5%) so taps feel stable — pulls are how you shape the pattern
+        if (Math.random() < 0.05) {
           const delta = Math.random() < 0.5 ? 1 : -1;
           s.dynamicLength = Math.max(
-            DRIFT_LENGTH_RANGE[0],
-            Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + delta)
+            PATTERN_LENGTH_RANGE[0],
+            Math.min(PATTERN_LENGTH_RANGE[1], s.dynamicLength + delta)
           );
-        } else if (rng < 0.8) {
-          s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
         }
-        // (remaining ~20%: no mutation this tap — preserves the current feel)
       }
 
-      // Release drag: store displacement as energy and kick spring
       if (wasDragging) {
         const dist = Math.hypot(s.x - s.restX, s.y - s.restY);
-        s.energy = Math.min(1, dist / DRAG_ENERGY_SCALE);
+        s.energy = Math.min(1, Math.pow(dist / DRAG_ENERGY_SCALE, 1.8));
         s.vx = (s.restX - s.x) * 0.05;
         s.vy = (s.restY - s.y) * 0.05;
       }
 
-      // Persist any phase shift accumulated during this hold gesture
       s.dynamicPhase += Math.round(s.holdPhaseAccum);
       s.holdPhaseAccum = 0;
 
@@ -704,15 +638,12 @@ export function GrooveSystem({
   );
 
   // ── Main animation + clock loop ─────────────────────────────────────────────
-  // Defined in a single useEffect with empty deps so the closure is stable.
-  // All mutable state is accessed through refs so no stale data.
   useEffect(() => {
     const loop = (now: number) => {
       rafRef.current = requestAnimationFrame(loop);
 
-      // Frame delta for frame-rate-independent accumulations
       const deltaSeconds = lastFrameTimeRef.current !== null
-        ? Math.min((now - lastFrameTimeRef.current) / 1000, 0.1) // cap at 100 ms to handle tab-hidden spikes
+        ? Math.min((now - lastFrameTimeRef.current) / 1000, 0.1)
         : 1 / 60;
       lastFrameTimeRef.current = now;
 
@@ -732,8 +663,6 @@ export function GrooveSystem({
         if (currentStep > lastStepRef.current) {
           for (let step = lastStepRef.current + 1; step <= currentStep; step++) {
             let triggersThisStep = 0;
-
-            // Track which agents fire this step (for inter-agent influence)
             const firedThisStep = new Array<boolean>(states.length).fill(false);
 
             // User-scheduled taps have priority
@@ -762,35 +691,16 @@ export function GrooveSystem({
               const s = states[i];
               const agent = AGENTS[i];
 
-              // Spontaneous slow drift: evolve pattern length or phase
-              if (--s.driftTimer <= 0) {
-                s.driftTimer = DRIFT_STEPS_MIN +
-                  Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN));
-                if (Math.random() < 0.5) {
-                  const delta = Math.random() < 0.5 ? 1 : -1;
-                  s.dynamicLength = Math.max(
-                    DRIFT_LENGTH_RANGE[0],
-                    Math.min(DRIFT_LENGTH_RANGE[1], s.dynamicLength + delta)
-                  );
-                } else {
-                  s.dynamicPhase += Math.random() < 0.5 ? 1 : -1;
-                }
-              }
-
               if (s.energy < ENERGY_THRESHOLD) {
-                // Memory: no fire
                 s.memoryAvg *= 1 - 1 / MEMORY_TC;
-                // Slow non-linear drain below threshold
                 s.energy *= DECAY_LOW * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
                 continue;
               }
 
-              // Phase includes any shift accumulated during a hold gesture
               const effectivePhase = s.dynamicPhase + Math.round(s.holdPhaseAccum);
-              const len = Math.max(DRIFT_LENGTH_RANGE[0], s.dynamicLength);
+              const len = Math.max(PATTERN_LENGTH_RANGE[0], s.dynamicLength);
               const cycle = ((step - effectivePhase) % len + len) % len;
 
-              // Hold subdivision: holding at medium+ energy fires freely on every beat
               const isHolding = s.holdStart !== null && !s.dragging;
               const holdSubdivide =
                 isHolding && s.energy >= HOLD_SUBDIVIDE_THRESHOLD && step % 2 === 0;
@@ -811,31 +721,31 @@ export function GrooveSystem({
                   s.x, s.y, 220 + i * 55, hexToRgb(agent.color), 180
                 );
 
-                // Emergent ghost / echo note at high energy
-                if (s.energy >= GHOST_ENERGY_THRESHOLD && Math.random() < GHOST_CHANCE) {
-                  scheduleGhost(agent, audioCtx, when, output, reverbRef.current);
-                }
-
-                // Memory: record a fire
                 s.memoryAvg = s.memoryAvg * (1 - 1 / MEMORY_TC) + 1 / MEMORY_TC;
               } else {
-                // Memory: no fire this step
                 s.memoryAvg *= 1 - 1 / MEMORY_TC;
               }
 
-              // Non-linear, energy-state-dependent decay
-              const decayRate =
-                s.energy > 0.65 ? DECAY_HIGH : s.energy > 0.30 ? DECAY_MID : DECAY_LOW;
+              // Decay — when system is erupting, slow all decay for graceful glide-down
+              const systemEnergy = states.reduce((sum, st) => sum + st.energy, 0) / states.length;
+              const eruptionFactor = Math.max(0, systemEnergy - ERUPTION_THRESHOLD) /
+                (1 - ERUPTION_THRESHOLD);
+              const baseDecay = s.energy > 0.65 ? DECAY_HIGH
+                : s.energy > 0.30 ? DECAY_MID
+                : DECAY_LOW;
+              const decayRate = Math.min(0.965, baseDecay + eruptionFactor * ERUPTION_DECAY_BOOST);
               s.energy *= decayRate * (1 + (Math.random() - 0.5) * DECAY_JITTER * 2);
             }
 
-            // Inter-agent influence: ring neighbours receive a small energy nudge
+            // Inter-agent influence: nudge amplified by sender's energy → high-energy cascades
             for (let i = 0; i < states.length; i++) {
               if (!firedThisStep[i]) continue;
+              const nudge = INTER_AGENT_NUDGE_BASE *
+                (1 + states[i].energy * INTER_AGENT_NUDGE_SCALE);
               const prev = (i - 1 + states.length) % states.length;
               const next = (i + 1) % states.length;
-              states[prev].pendingInfluence += INTER_AGENT_NUDGE;
-              states[next].pendingInfluence += INTER_AGENT_NUDGE;
+              states[prev].pendingInfluence += nudge;
+              states[next].pendingInfluence += nudge;
             }
             for (let i = 0; i < states.length; i++) {
               if (states[i].pendingInfluence > 0) {
@@ -852,14 +762,11 @@ export function GrooveSystem({
       for (let i = 0; i < states.length; i++) {
         const s = states[i];
 
-        // Hold: accumulate energy and slowly phase-shift while pointer is held (not dragging)
         if (s.holdStart !== null && !s.dragging) {
           s.energy = Math.min(1, s.energy + HOLD_RATE);
-          // Frame-rate-independent phase shift accumulation
           s.holdPhaseAccum += HOLD_PHASE_RATE * deltaSeconds;
         }
 
-        // Spring pull back toward rest position
         if (!s.dragging) {
           const ax = -SPRING_K * (s.x - s.restX);
           const ay = -SPRING_K * (s.y - s.restY);
@@ -876,11 +783,10 @@ export function GrooveSystem({
       for (let i = 0; i < AGENTS.length; i++) {
         const agent = AGENTS[i];
         const s = states[i];
-        const pT = Math.max(0, (s.pulseUntil - now) / 220); // 0..1
+        const pT = Math.max(0, (s.pulseUntil - now) / 220);
 
         canvasCtx.save();
 
-        // Spring tension line when displaced
         const disp = Math.hypot(s.x - s.restX, s.y - s.restY);
         if (disp > 6) {
           canvasCtx.beginPath();
@@ -891,7 +797,6 @@ export function GrooveSystem({
           canvasCtx.stroke();
         }
 
-        // Glow proportional to energy + pulse
         const energyVis = Math.max(s.energy, pT * 0.6);
         if (energyVis > 0.04) {
           const glowR = baseRadius + energyVis * 28 + pT * 18;
@@ -910,7 +815,6 @@ export function GrooveSystem({
           canvasCtx.fill();
         }
 
-        // Main circle
         const scale = 1 + pT * 0.18;
         const r = baseRadius * scale;
         canvasCtx.beginPath();
@@ -921,7 +825,6 @@ export function GrooveSystem({
         canvasCtx.lineWidth = 2.5;
         canvasCtx.stroke();
 
-        // Energy arc around the circle
         if (s.energy > 0.02) {
           const arcEnd = -Math.PI / 2 + s.energy * 2 * Math.PI;
           canvasCtx.beginPath();
@@ -932,7 +835,6 @@ export function GrooveSystem({
           canvasCtx.stroke();
         }
 
-        // Emoji + label
         const emojiSize = Math.round(r * 0.7);
         canvasCtx.font = `${emojiSize}px serif`;
         canvasCtx.fillStyle = "rgba(255,255,255,0.96)";
@@ -948,10 +850,10 @@ export function GrooveSystem({
         canvasCtx.restore();
       }
 
-      // ── Tempo pulse indicator (small dot at bottom-centre) ────────────────
+      // ── Tempo pulse indicator ─────────────────────────────────────────────
       if (audioCtx && clockStartRef.current !== null) {
         const elapsed = audioCtx.currentTime - clockStartRef.current;
-        const quarterBeatPhase = (elapsed / (STEP_SECONDS * 2)) % 1; // quarter-beat phase
+        const quarterBeatPhase = (elapsed / (STEP_SECONDS * 2)) % 1;
         const pr = 4 + quarterBeatPhase * 6;
         const alpha = 0.3 + quarterBeatPhase * 0.5;
         canvasCtx.beginPath();
@@ -965,7 +867,6 @@ export function GrooveSystem({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-    // audioContextRef, compressorRef, reverbRef, rainbowFieldRef are stable refs.
   }, []);
 
   // ── Canvas resize ────────────────────────────────────────────────────────────
@@ -994,7 +895,6 @@ export function GrooveSystem({
       const states = agentStateRef.current;
 
       if (states.length === 0) {
-        // First initialisation
         agentStateRef.current = positions.map((pos, i) => ({
           x: pos.x,
           y: pos.y,
@@ -1009,19 +909,13 @@ export function GrooveSystem({
           pulseUntil: 0,
           scheduledTap: false,
           lastStep: -1,
-          // Mutable pattern state — seeded from AgentDef
           dynamicLength: AGENTS[i].patternLength,
           dynamicPhase: AGENTS[i].phaseOffset,
           holdPhaseAccum: 0,
-          // Inter-agent influence
           pendingInfluence: 0,
-          // Memory / drift — stagger initial drift timers so agents don't all drift at once
           memoryAvg: 0,
-          driftTimer: DRIFT_STEPS_MIN +
-            Math.round(Math.random() * (DRIFT_STEPS_MAX - DRIFT_STEPS_MIN)),
         }));
       } else {
-        // Reposition rest points, preserving current spring displacement
         positions.forEach((pos, i) => {
           const s = states[i];
           if (!s) return;
